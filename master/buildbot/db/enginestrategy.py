@@ -132,7 +132,7 @@ class MySQLStrategy(Strategy):
     def should_retry(self, ex):
         return any([self.is_disconnect(ex.orig.args),
                     self.is_deadlock(ex.orig.args),
-                    super(MySQLStrategy, self).should_retry(ex)])
+                    super().should_retry(ex)])
 
 
 def get_sqlalchemy_migrate_version():
@@ -202,13 +202,12 @@ class BuildbotEngineStrategy(strategies.PlainEngineStrategy):
         use its value for pool_recycle.  Also, force use_unicode and
         charset to be True and 'utf8', failing if they were set to
         anything else."""
-
         kwargs['pool_recycle'] = int(u.query.pop('max_idle', 3600))
 
         # default to the MyISAM storage engine
         storage_engine = u.query.pop('storage_engine', 'MyISAM')
         kwargs['connect_args'] = {
-            'init_command': 'SET default_storage_engine=%s' % storage_engine,
+            'init_command': 'SET default_storage_engine={}'.format(storage_engine)
         }
 
         if 'use_unicode' in u.query:
@@ -216,7 +215,7 @@ class BuildbotEngineStrategy(strategies.PlainEngineStrategy):
                 raise TypeError("Buildbot requires use_unicode=True " +
                                 "(and adds it automatically)")
         else:
-            u.query['use_unicode'] = True
+            u.query['use_unicode'] = "True"
 
         if 'charset' in u.query:
             if u.query['charset'] != "utf8":
@@ -236,12 +235,13 @@ class BuildbotEngineStrategy(strategies.PlainEngineStrategy):
             return  # unparseable -- oh well
 
         if version_tup < (0, 6):
-            raise RuntimeError("SQLAlchemy version %s is too old" % (version,))
+            raise RuntimeError("SQLAlchemy version {} is too old".format(version))
         if version_tup > (0, 7, 10):
             mvt = get_sqlalchemy_migrate_version()
             if mvt < (0, 8, 0):
-                raise RuntimeError("SQLAlchemy version %s is not supported by "
-                                   "SQLAlchemy-Migrate version %d.%d.%d" % (version, mvt[0], mvt[1], mvt[2]))
+                raise RuntimeError(("SQLAlchemy version {} is not supported by "
+                                    "SQLAlchemy-Migrate version {}.{}.{}").format(version, mvt[0],
+                                                                                  mvt[1], mvt[2]))
 
     def get_drivers_strategy(self, drivername):
         if drivername.startswith('sqlite'):

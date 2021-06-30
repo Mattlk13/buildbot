@@ -29,7 +29,7 @@ class DownloadSecretsToWorker(BuildStep, CompositeStepMixin):
     renderables = ['secret_to_be_populated']
 
     def __init__(self, populated_secret_list, **kwargs):
-        super(DownloadSecretsToWorker, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.secret_to_be_populated = populated_secret_list
 
     @defer.inlineCallbacks
@@ -37,15 +37,15 @@ class DownloadSecretsToWorker(BuildStep, CompositeStepMixin):
         result = SUCCESS
         for path, secretvalue in self.secret_to_be_populated:
             if not isinstance(path, str):
-                raise ValueError("Secret path %s is not a string" % path)
+                raise ValueError("Secret path {} is not a string".format(path))
             self.secret_to_be_interpolated = secretvalue
-            res = yield self.downloadFileContentToWorker(path, self.secret_to_be_interpolated, mode=stat.S_IRUSR | stat.S_IWUSR)
+            res = yield self.downloadFileContentToWorker(path, self.secret_to_be_interpolated,
+                                                         mode=stat.S_IRUSR | stat.S_IWUSR)
             result = worst_status(result, res)
         return result
 
     @defer.inlineCallbacks
     def run(self):
-        self._start_deferred = None
         res = yield self.runPopulateSecrets()
         return res
 
@@ -57,7 +57,7 @@ class RemoveWorkerFileSecret(BuildStep, CompositeStepMixin):
         for path, secret in populated_secret_list:
             self.paths.append(path)
         self.logEnviron = logEnviron
-        super(RemoveWorkerFileSecret, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     @defer.inlineCallbacks
     def runRemoveWorkerFileSecret(self):
@@ -73,6 +73,5 @@ class RemoveWorkerFileSecret(BuildStep, CompositeStepMixin):
 
     @defer.inlineCallbacks
     def run(self):
-        self._start_deferred = None
         res = yield self.runRemoveWorkerFileSecret()
         return res

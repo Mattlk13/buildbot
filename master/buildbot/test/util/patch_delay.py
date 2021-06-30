@@ -41,7 +41,7 @@ def _importer(target):
     thing = __import__(import_path)
 
     for comp in components:
-        import_path += ".%s" % comp
+        import_path += ".{}".format(comp)
         thing = _dot_lookup(thing, comp, import_path)
     return thing
 
@@ -49,9 +49,9 @@ def _importer(target):
 def _get_target(target):
     try:
         target, attribute = target.rsplit('.', 1)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
         raise TypeError("Need a valid target to patch. You supplied: %r" %
-                        (target,))
+                        (target,)) from e
     return _importer(target), attribute
 
 

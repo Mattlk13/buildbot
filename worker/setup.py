@@ -24,11 +24,39 @@ from __future__ import print_function
 
 import os
 import sys
-from distutils.command.install_data import install_data
-from distutils.command.sdist import sdist
-from distutils.core import setup
 
 from buildbot_worker import version
+
+try:
+    # If setuptools is installed, then we'll add setuptools-specific arguments
+    # to the setup args.
+    import setuptools
+    from setuptools import setup
+    from setuptools.command.sdist import sdist
+    from distutils.command.install_data import install_data
+except ImportError:
+    setuptools = None
+    from distutils.command.sdist import sdist
+    from distutils.core import setup
+
+BUILDING_WHEEL = bool("bdist_wheel" in sys.argv)
+
+
+class our_install_data(install_data):
+
+    def finalize_options(self):
+        self.set_undefined_options('install',
+                                   ('install_lib', 'install_dir'),
+                                   )
+        install_data.finalize_options(self)
+
+    def run(self):
+        install_data.run(self)
+        # ensure there's a buildbot_worker/VERSION file
+        fn = os.path.join(self.install_dir, 'buildbot_worker', 'VERSION')
+        with open(fn, 'w') as f:
+            f.write(version)
+        self.outfiles.append(fn)
 
 
 class our_sdist(sdist):
@@ -73,6 +101,8 @@ setup_args = {
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
     ],
 
     'packages': [
@@ -82,24 +112,29 @@ setup_args = {
         "buildbot_worker.commands",
         "buildbot_worker.scripts",
         "buildbot_worker.monkeypatches",
+    ] + ([] if BUILDING_WHEEL else [  # skip tests for wheels (save 40% of the archive)
         "buildbot_worker.test",
         "buildbot_worker.test.fake",
         "buildbot_worker.test.unit",
         "buildbot_worker.test.util",
-    ],
+    ]),
+    # mention data_files, even if empty, so install_data is called and
+    # VERSION gets copied
+    'data_files': [("buildbot_worker", [])],
     'package_data': {
         '': [
             'VERSION',
         ]
     },
     'cmdclass': {
+        'install_data': our_install_data,
         'sdist': our_sdist
     },
     'entry_points': {
         'console_scripts': [
             'buildbot-worker=buildbot_worker.scripts.runner:run',
             # this will also be shipped on non windows :-(
-            'buildbot_worker_windows_service=buildbot_worker.scripts.windows_service:HandleCommandLine',
+            'buildbot_worker_windows_service=buildbot_worker.scripts.windows_service:HandleCommandLine',  # noqa pylint: disable=line-too-long
         ]}
 }
 
@@ -111,14 +146,7 @@ if sys.platform == "win32":
 
 twisted_ver = ">= 17.9.0"
 
-
-try:
-    # If setuptools is installed, then we'll add setuptools-specific arguments
-    # to the setup args.
-    import setuptools  # @UnusedImport
-except ImportError:
-    pass
-else:
+if setuptools is not None:
     setup_args['install_requires'] = [
         'twisted ' + twisted_ver,
         'future',

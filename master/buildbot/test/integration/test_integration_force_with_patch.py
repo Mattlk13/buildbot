@@ -23,7 +23,7 @@ from buildbot.test.util.decorators import skipUnlessPlatformIs
 from buildbot.test.util.integration import RunMasterBase
 
 # a simple patch which adds a Makefile
-PATCH = """diff --git a/Makefile b/Makefile
+PATCH = b"""diff --git a/Makefile b/Makefile
 new file mode 100644
 index 0000000..8a5cf80
 --- /dev/null
@@ -37,14 +37,12 @@ index 0000000..8a5cf80
 class MySource(Source):
     """A source class which only applies the patch"""
 
-    def startVC(self, branch, revision, patch):
-        self.stdio_log = self.addLogForRemoteCommands("stdio")
-        d = defer.succeed(SUCCESS)
+    @defer.inlineCallbacks
+    def run_vc(self, branch, revision, patch):
+        self.stdio_log = yield self.addLogForRemoteCommands("stdio")
         if patch:
-            d.addCallback(self.patch, patch)
-        d.addCallback(self.finished)
-        d.addErrback(self.failed)
-        return d
+            yield self.patch(patch)
+        return SUCCESS
 
 
 class ShellMaster(RunMasterBase):
@@ -53,7 +51,8 @@ class ShellMaster(RunMasterBase):
     @defer.inlineCallbacks
     def test_shell(self):
         yield self.setupConfig(masterConfig())
-        build = yield self.doForceBuild(wantSteps=True, wantLogs=True, forceParams={'foo_patch_body': PATCH})
+        build = yield self.doForceBuild(wantSteps=True, wantLogs=True,
+                                        forceParams={'foo_patch_body': PATCH})
         self.assertEqual(build['buildid'], 1)
         # if makefile was not properly created, we would have a failure
         self.assertEqual(build['results'], SUCCESS)

@@ -23,11 +23,13 @@ from buildbot.process.results import EXCEPTION
 from buildbot.process.results import FAILURE
 from buildbot.process.results import SUCCESS
 from buildbot.process.results import WARNINGS
-from buildbot.process.results import Results
-from buildbot.reporters.message import MessageFormatter as DefaultMessageFormatter
-from buildbot.reporters.message import MessageFormatterMissingWorker
-from buildbot.reporters.notifier import NotifierBase
+from buildbot.reporters.base import ReporterBase
+from buildbot.reporters.generators.build import BuildStatusGenerator
+from buildbot.reporters.message import MessageFormatter
 from buildbot.util import httpclientservice
+
+from .utils import merge_reports_prop
+from .utils import merge_reports_prop_take_first
 
 ENCODING = 'utf8'
 
@@ -42,23 +44,20 @@ PRIORITIES = {
     WARNINGS: 'warnings'
 }
 
+DEFAULT_MSG_TEMPLATE = \
+    ('The Buildbot has detected a <a href="{{ build_url }}">{{ status_detected }}</a>' +
+     'of <i>{{ buildername }}</i> while building {{ projects }} on {{ workername }}.')
 
-class PushoverNotifier(NotifierBase):
 
-    def checkConfig(self, user_key, api_token,
-                    mode=("failing", "passing", "warnings"),
-                    tags=None, builders=None,
-                    buildSetSummary=False, messageFormatter=None,
-                    subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                    schedulers=None, branches=None,
-                    priorities=None, otherParams=None,
-                    watchedWorkers=None, messageFormatterMissingWorker=None):
+class PushoverNotifier(ReporterBase):
 
-        super(PushoverNotifier, self).checkConfig(mode, tags, builders,
-                                                  buildSetSummary, messageFormatter,
-                                                  subject, False, False,
-                                                  schedulers,
-                                                  branches, watchedWorkers)
+    def checkConfig(self, user_key, api_token, priorities=None, otherParams=None,
+                    generators=None):
+
+        if generators is None:
+            generators = self._create_default_generators()
+
+        super().checkConfig(generators=generators)
 
         httpclientservice.HTTPClientService.checkAvailable(self.__class__.__name__)
 
@@ -67,26 +66,14 @@ class PushoverNotifier(NotifierBase):
                          "'url', 'url_title', 'device', 'retry', 'expire', or 'html'")
 
     @defer.inlineCallbacks
-    def reconfigService(self, user_key, api_token,
-                        mode=("failing", "passing", "warnings"),
-                        tags=None, builders=None,
-                        buildSetSummary=False, messageFormatter=None,
-                        subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                        schedulers=None, branches=None,
-                        priorities=None, otherParams=None,
-                        watchedWorkers=None, messageFormatterMissingWorker=None):
+    def reconfigService(self, user_key, api_token, priorities=None, otherParams=None,
+                        generators=None):
         user_key, api_token = yield self.renderSecrets(user_key, api_token)
-        if messageFormatter is None:
-            messageFormatter = DefaultMessageFormatter(template_type='html',
-                template_filename='default_notification.txt')
-        if messageFormatterMissingWorker is None:
-            messageFormatterMissingWorker = MessageFormatterMissingWorker(
-                template_filename='missing_notification.txt')
-        super(PushoverNotifier, self).reconfigService(mode, tags, builders,
-                                                      buildSetSummary, messageFormatter,
-                                                      subject, False, False,
-                                                      schedulers, branches,
-                                                      watchedWorkers, messageFormatterMissingWorker)
+
+        if generators is None:
+            generators = self._create_default_generators()
+
+        yield super().reconfigService(generators=generators)
         self.user_key = user_key
         self.api_token = api_token
         if priorities is None:
@@ -100,27 +87,28 @@ class PushoverNotifier(NotifierBase):
         self._http = yield httpclientservice.HTTPClientService.getService(
             self.master, 'https://api.pushover.net')
 
-    def sendMessage(self, body, subject=None, type=None, builderName=None,
-                    results=None, builds=None, users=None, patches=None,
-                    logs=None, worker=None):
+    def _create_default_generators(self):
+        formatter = MessageFormatter(template_type='html', template=DEFAULT_MSG_TEMPLATE)
+        return [BuildStatusGenerator(message_formatter=formatter)]
 
-        if worker is not None and worker not in self.watchedWorkers:
-            return
+    def sendMessage(self, reports):
+        body = merge_reports_prop(reports, 'body')
+        subject = merge_reports_prop_take_first(reports, 'subject')
+        type = merge_reports_prop_take_first(reports, 'type')
+        results = merge_reports_prop(reports, 'results')
+        worker = merge_reports_prop_take_first(reports, 'worker')
 
-        msg = {'message': body}
+        msg = {
+            'message': body,
+            'title': subject
+        }
         if type == 'html':
             msg['html'] = '1'
         try:
-            msg['priority'] = self.priorities[PRIORITIES[results] if worker is None else 'worker_missing']
+            priority_name = PRIORITIES[results] if worker is None else 'worker_missing'
+            msg['priority'] = self.priorities[priority_name]
         except KeyError:
             pass
-        if subject is not None:
-            msg['title'] = subject
-        else:
-            msg['title'] = self.subject % {'result': Results[results],
-                                           'projectName': self.master.config.title,
-                                           'title': self.master.config.title,
-                                           'builder': builderName}
         return self.sendNotification(msg)
 
     def sendNotification(self, params):

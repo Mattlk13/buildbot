@@ -21,13 +21,13 @@ from datetime import datetime
 from dateutil.tz import tzutc
 
 from twisted.internet import defer
-from twisted.internet import reactor
 from twisted.python import log
 from twisted.python.failure import Failure
 
 from buildbot.data import resultspec
 from buildbot.process import metrics
 from buildbot.process.buildrequest import BuildRequest
+from buildbot.util import deferwaiter
 from buildbot.util import epoch2datetime
 from buildbot.util import service
 
@@ -227,7 +227,7 @@ class BasicBuildChooser(BuildChooserBase):
                     nextBreq = None
             except Exception:
                 log.err(Failure(),
-                        "from _getNextUnclaimedBuildRequest for builder '%s'" % (self.bldr,))
+                        "from _getNextUnclaimedBuildRequest for builder '{}'".format(self.bldr))
                 nextBreq = None
         else:
             # otherwise just return the first build
@@ -248,7 +248,7 @@ class BasicBuildChooser(BuildChooserBase):
                 worker = yield self.nextWorker(self.bldr, self.workerpool, buildrequest)
             except Exception:
                 log.err(Failure(),
-                        "from nextWorker for builder '%s'" % (self.bldr,))
+                        "from nextWorker for builder '{}'".format(self.bldr))
                 worker = None
 
             if not worker or worker not in self.workerpool:
@@ -296,7 +296,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
         self.activity_lock = defer.DeferredLock()
         self.active = False
 
-        self._pendingMSBOCalls = []
+        self._deferwaiter = deferwaiter.DeferWaiter()
         self._activity_loop_deferred = None
 
     @defer.inlineCallbacks
@@ -311,8 +311,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
         # they don't get interrupted in mid-stride.  This tends to be
         # particularly painful because it can occur when a generator is gc'd.
         # TEST-TODO: this behavior is not asserted in any way.
-        if self._pendingMSBOCalls:
-            yield defer.DeferredList(self._pendingMSBOCalls)
+        yield self._deferwaiter.wait()
 
     @defer.inlineCallbacks
     def maybeStartBuildsOn(self, new_builders):
@@ -327,15 +326,10 @@ class BuildRequestDistributor(service.AsyncMultiService):
         if not self.running:
             return
 
-        d = self._maybeStartBuildsOn(new_builders)
-        self._pendingMSBOCalls.append(d)
-
         try:
-            yield d
+            yield self._deferwaiter.add(self._maybeStartBuildsOn(new_builders))
         except Exception as e:  # pragma: no cover
             log.err(e, "while starting builds on {0}".format(new_builders))
-        finally:
-            self._pendingMSBOCalls.remove(d)
 
     @defer.inlineCallbacks
     def _maybeStartBuildsOn(self, new_builders):
@@ -365,10 +359,11 @@ class BuildRequestDistributor(service.AsyncMultiService):
                     self._activity_loop_deferred = self._activityLoop()
             except Exception:  # pragma: no cover
                 log.err(Failure(),
-                        "while attempting to start builds on %s" % self.name)
+                        "while attempting to start builds on {}".format(self.name))
 
         yield self.pending_builders_lock.run(
             resetPendingBuildersList, new_builders)
+        return None
 
     @defer.inlineCallbacks
     def _defaultSorter(self, master, builders):
@@ -432,7 +427,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
 
         # run it
         try:
-            builders = yield defer.maybeDeferred(sorter, self.master, builders)
+            builders = yield sorter(self.master, builders)
         except Exception:
             log.err(Failure(), "prioritizing builders; order unspecified")
 
@@ -477,8 +472,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
                 if bldr:
                     yield self._maybeStartBuildsOnBuilder(bldr)
             except Exception:
-                log.err(Failure(),
-                        "from maybeStartBuild for builder '%s'" % (bldr_name,))
+                log.err(Failure(), "from maybeStartBuild for builder '{}'".format(bldr_name))
 
             self.activity_lock.release()
 
@@ -487,7 +481,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
         self.active = False
 
     @defer.inlineCallbacks
-    def _maybeStartBuildsOnBuilder(self, bldr, _reactor=reactor):
+    def _maybeStartBuildsOnBuilder(self, bldr):
         # create a chooser to give us our next builds
         # this object is temporary and will go away when we're done
         bc = self.createBuildChooser(bldr, self.master)
@@ -499,7 +493,7 @@ class BuildRequestDistributor(service.AsyncMultiService):
 
             # claim brid's
             brids = [br.id for br in breqs]
-            claimed_at_epoch = _reactor.seconds()
+            claimed_at_epoch = self.master.reactor.seconds()
             claimed_at = epoch2datetime(claimed_at_epoch)
             if not (yield self.master.data.updates.claimBuildRequests(
                     brids, claimed_at=claimed_at)):

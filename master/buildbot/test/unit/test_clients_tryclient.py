@@ -14,108 +14,29 @@
 # Copyright Buildbot Team Members
 
 
+import base64
 import json
 import sys
 
-from twisted.python.compat import unicode
 from twisted.trial import unittest
 
 from buildbot.clients import tryclient
+from buildbot.util import bytes2unicode
 
 
 class createJobfile(unittest.TestCase):
 
     def makeNetstring(self, *strings):
-        return ''.join(['%d:%s,' % (len(s), s) for s in strings])
+        return ''.join(['{}:{},'.format(len(s), s) for s in strings])
 
-    # version 1 is deprecated and not produced by the try client
-
-    def test_createJobfile_v2_one_builder(self):
-        jobid = '123-456'
-        branch = 'branch'
-        baserev = 'baserev'
-        patch_level = 0
-        patch_body = 'diff...'
-        repository = 'repo'
-        project = 'proj'
-        who = None
-        comment = None
-        builderNames = ['runtests']
-        properties = {}
-        job = tryclient.createJobfile(
-            jobid, branch, baserev, patch_level, patch_body, repository,
-            project, who, comment, builderNames, properties)
-        jobstr = self.makeNetstring(
-            '2', jobid, branch, baserev, str(patch_level), patch_body,
-            repository, project, builderNames[0])
-        self.assertEqual(job, jobstr)
-
-    def test_createJobfile_v2_two_builders(self):
-        jobid = '123-456'
-        branch = 'branch'
-        baserev = 'baserev'
-        patch_level = 0
-        patch_body = 'diff...'
-        repository = 'repo'
-        project = 'proj'
-        who = None
-        comment = None
-        builderNames = ['runtests', 'moretests']
-        properties = {}
-        job = tryclient.createJobfile(
-            jobid, branch, baserev, patch_level, patch_body, repository,
-            project, who, comment, builderNames, properties)
-        jobstr = self.makeNetstring(
-            '2', jobid, branch, baserev, str(patch_level), patch_body,
-            repository, project, builderNames[0], builderNames[1])
-        self.assertEqual(job, jobstr)
-
-    def test_createJobfile_v3(self):
-        jobid = '123-456'
-        branch = 'branch'
-        baserev = 'baserev'
-        patch_level = 0
-        patch_body = 'diff...'
-        repository = 'repo'
-        project = 'proj'
-        who = 'someuser'
-        comment = None
-        builderNames = ['runtests']
-        properties = {}
-        job = tryclient.createJobfile(
-            jobid, branch, baserev, patch_level, patch_body, repository,
-            project, who, comment, builderNames, properties)
-        jobstr = self.makeNetstring(
-            '3', jobid, branch, baserev, str(patch_level), patch_body,
-            repository, project, who, builderNames[0])
-        self.assertEqual(job, jobstr)
-
-    def test_createJobfile_v4(self):
-        jobid = '123-456'
-        branch = 'branch'
-        baserev = 'baserev'
-        patch_level = 0
-        patch_body = 'diff...'
-        repository = 'repo'
-        project = 'proj'
-        who = 'someuser'
-        comment = 'insightful comment'
-        builderNames = ['runtests']
-        properties = {}
-        job = tryclient.createJobfile(
-            jobid, branch, baserev, patch_level, patch_body, repository,
-            project, who, comment, builderNames, properties)
-        jobstr = self.makeNetstring(
-            '4', jobid, branch, baserev, str(patch_level), patch_body,
-            repository, project, who, comment, builderNames[0])
-        self.assertEqual(job, jobstr)
+    # versions 1-4 are deprecated and not produced by the try client
 
     def test_createJobfile_v5(self):
         jobid = '123-456'
         branch = 'branch'
         baserev = 'baserev'
         patch_level = 0
-        patch_body = 'diff...'
+        patch_body = b'diff...'
         repository = 'repo'
         project = 'proj'
         who = 'someuser'
@@ -129,10 +50,38 @@ class createJobfile(unittest.TestCase):
             '5',
             json.dumps({
                 'jobid': jobid, 'branch': branch, 'baserev': baserev,
-                'patch_level': patch_level, 'patch_body': patch_body,
+                'patch_level': patch_level,
                 'repository': repository, 'project': project, 'who': who,
                 'comment': comment, 'builderNames': builderNames,
                 'properties': properties,
+                'patch_body': bytes2unicode(patch_body),
+            }))
+        self.assertEqual(job, jobstr)
+
+    def test_createJobfile_v6(self):
+        jobid = '123-456'
+        branch = 'branch'
+        baserev = 'baserev'
+        patch_level = 0
+        patch_body = b'diff...\xff'
+        repository = 'repo'
+        project = 'proj'
+        who = 'someuser'
+        comment = 'insightful comment'
+        builderNames = ['runtests']
+        properties = {'foo': 'bar'}
+        job = tryclient.createJobfile(
+            jobid, branch, baserev, patch_level, patch_body, repository,
+            project, who, comment, builderNames, properties)
+        jobstr = self.makeNetstring(
+            '6',
+            json.dumps({
+                'jobid': jobid, 'branch': branch, 'baserev': baserev,
+                'patch_level': patch_level,
+                'repository': repository, 'project': project, 'who': who,
+                'comment': comment, 'builderNames': builderNames,
+                'properties': properties,
+                'patch_body_base64': bytes2unicode(base64.b64encode(patch_body)),
             }))
         self.assertEqual(job, jobstr)
 
@@ -142,7 +91,7 @@ class createJobfile(unittest.TestCase):
             sse.readPatch(diff, patchlevel)
             self.assertEqual(sse.patch, (patchlevel, None))
         sse.readPatch(b"diff schmiff blah blah blah", 23)
-        self.assertEqual(sse.patch, (23, "diff schmiff blah blah blah"))
+        self.assertEqual(sse.patch, (23, b"diff schmiff blah blah blah"))
 
     def test_GitExtractor_fixBranch(self):
         sse = tryclient.GitExtractor(None, "origin/master", None)
@@ -172,12 +121,12 @@ class createJobfile(unittest.TestCase):
 
     def test_RemoteTryPP_encoding(self):
         rmt = tryclient.RemoteTryPP("job")
-        self.assertTrue(isinstance(rmt.job, unicode))
+        self.assertTrue(isinstance(rmt.job, str))
         rmt.transport = self.RemoteTryPP_TestStream()
         rmt.connectionMade()
         self.assertFalse(rmt.transport.is_open)
         self.assertEqual(len(rmt.transport.writes), 1)
-        self.assertFalse(isinstance(rmt.transport.writes[0], unicode))
+        self.assertFalse(isinstance(rmt.transport.writes[0], str))
         for streamname in "out", "err":
             sys_streamattr = "std" + streamname
             rmt_methodattr = streamname + "Received"
@@ -189,4 +138,4 @@ class createJobfile(unittest.TestCase):
             finally:
                 setattr(sys, sys_streamattr, saved_stream)
             self.assertEqual(len(teststream.writes), 1)
-            self.assertTrue(isinstance(teststream.writes[0], unicode))
+            self.assertTrue(isinstance(teststream.writes[0], str))

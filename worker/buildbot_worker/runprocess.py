@@ -451,13 +451,13 @@ class RunProcess(object):
         self.deferred = defer.Deferred()
         try:
             self._startCommand()
-        except Exception:
+        except Exception as e:
             log.err(failure.Failure(), "error in RunProcess._startCommand")
-            self._addToBuffers('stderr', "error in RunProcess._startCommand\n")
+            self._addToBuffers('stderr', "error in RunProcess._startCommand (%s)\n" % str(e))
             self._addToBuffers('stderr', traceback.format_exc())
             self._sendBuffers()
             # pretend it was a shell error
-            self.deferred.errback(AbandonChain(-1))
+            self.deferred.errback(AbandonChain(-1, 'Got exception (%s)' % str(e)))
         return self.deferred
 
     def _startCommand(self):
@@ -549,8 +549,10 @@ class RunProcess(object):
             msg = u" environment:\n"
             env_names = sorted(self.environ.keys())
             for name in env_names:
-                msg += u"  {0}={1}\n".format(bytes2unicode(name, encoding=self.builder.unicode_encoding),
-                                             bytes2unicode(self.environ[name], encoding=self.builder.unicode_encoding))
+                msg += u"  {0}={1}\n".format(bytes2unicode(name,
+                                                           encoding=self.builder.unicode_encoding),
+                                             bytes2unicode(self.environ[name],
+                                                           encoding=self.builder.unicode_encoding))
             log.msg(u" environment:\n{0}".format(pprint.pformat(self.environ)))
             self._addToBuffers(u'header', msg)
 

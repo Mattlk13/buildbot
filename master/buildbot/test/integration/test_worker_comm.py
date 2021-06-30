@@ -16,8 +16,6 @@
 
 import os
 
-import mock
-
 from twisted.cred import credentials
 from twisted.internet import defer
 from twisted.internet import reactor
@@ -34,7 +32,6 @@ from buildbot import worker
 from buildbot.process import botmaster
 from buildbot.process import builder
 from buildbot.process import factory
-from buildbot.status import master
 from buildbot.test.fake import fakemaster
 from buildbot.test.util.misc import TestReactorMixin
 from buildbot.util.eventual import eventually
@@ -94,7 +91,13 @@ class FakeWorkerWorker(pb.Referenceable):
             'info': 'here',
             'worker_commands': {
                 'x': 1,
-            }
+            },
+            'numcpus': 1,
+            'none': None,
+            'os_release': b'\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode(),
+            b'\xe3\x83\xaa\xe3\x83\xaa\xe3\x83\xbc\xe3\x82\xb9\xe3'
+            b'\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode():
+                b'\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode(),
         }
 
     def remote_getVersion(self):
@@ -111,10 +114,6 @@ class FakeWorkerWorker(pb.Referenceable):
 
 
 class FakeBuilder(builder.Builder):
-
-    def __init__(self, name):
-        super().__init__(name)
-        self.builder_status = mock.Mock()
 
     def attached(self, worker, commands):
         return defer.succeed(None)
@@ -171,20 +170,18 @@ class TestWorkerComm(unittest.TestCase, TestReactorMixin):
         # set the worker port to a loopback address with unspecified
         # port
         self.pbmanager = self.master.pbmanager = pbmanager.PBManager()
-        self.pbmanager.setServiceParent(self.master)
+        yield self.pbmanager.setServiceParent(self.master)
 
         # remove the fakeServiceParent from fake service hierarchy, and replace
         # by a real one
         yield self.master.workers.disownServiceParent()
         self.workers = self.master.workers = workermanager.WorkerManager(
             self.master)
-        self.workers.setServiceParent(self.master)
+        yield self.workers.setServiceParent(self.master)
 
         self.botmaster = botmaster.BotMaster()
-        self.botmaster.setServiceParent(self.master)
+        yield self.botmaster.setServiceParent(self.master)
 
-        self.master.status = master.Status()
-        self.master.status.setServiceParent(self.master)
         self.master.botmaster = self.botmaster
         self.master.data.updates.workerConfigured = lambda *a, **k: None
         yield self.master.startService()
@@ -333,6 +330,26 @@ class TestWorkerComm(unittest.TestCase, TestReactorMixin):
         self.workerSideDisconnect(worker)
 
         # wait for the resulting detach
+        yield worker.waitForDetach()
+
+    @defer.inlineCallbacks
+    def test_worker_info(self):
+        yield self.addWorker()
+        worker = yield self.connectWorker()
+        props = self.buildworker.info
+        # check worker info passing
+        self.assertEqual(props.getProperty("info"),
+                         "here")
+        # check worker info passing with UTF-8
+        self.assertEqual(props.getProperty("os_release"),
+                         b'\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode())
+        self.assertEqual(props.getProperty(b'\xe3\x83\xaa\xe3\x83\xaa\xe3\x83\xbc\xe3\x82'
+                                           b'\xb9\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode()),
+                         b'\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88'.decode())
+        self.assertEqual(props.getProperty("none"), None)
+        self.assertEqual(props.getProperty("numcpus"), 1)
+
+        self.workerSideDisconnect(worker)
         yield worker.waitForDetach()
 
     @defer.inlineCallbacks

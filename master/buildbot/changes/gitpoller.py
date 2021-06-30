@@ -19,13 +19,13 @@ import stat
 from urllib.parse import quote as urlquote
 
 from twisted.internet import defer
-from twisted.internet import utils
 from twisted.python import log
 
 from buildbot import config
 from buildbot.changes import base
 from buildbot.util import bytes2unicode
 from buildbot.util import private_tempdir
+from buildbot.util import runprocess
 from buildbot.util.git import GitMixin
 from buildbot.util.git import getSshKnownHostsContents
 from buildbot.util.misc import writeLocalFile
@@ -42,22 +42,18 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
     """This source will poll a remote git repo for changes and submit
     them to the change master."""
 
-    compare_attrs = ("repourl", "branches", "workdir",
-                     "pollInterval", "gitbin", "usetimestamps",
-                     "category", "project", "pollAtLaunch",
-                     "buildPushesWithNoCommits", "sshPrivateKey", "sshHostKey",
-                     "sshKnownHosts")
+    compare_attrs = ("repourl", "branches", "workdir", "pollInterval", "gitbin", "usetimestamps",
+                     "category", "project", "pollAtLaunch", "buildPushesWithNoCommits",
+                     "sshPrivateKey", "sshHostKey", "sshKnownHosts", "pollRandomDelayMin",
+                     "pollRandomDelayMax")
 
     secrets = ("sshPrivateKey", "sshHostKey", "sshKnownHosts")
 
-    def __init__(self, repourl, branches=None, branch=None,
-                 workdir=None, pollInterval=10 * 60,
-                 gitbin='git', usetimestamps=True,
-                 category=None, project=None,
-                 pollinterval=-2, fetch_refspec=None,
-                 encoding='utf-8', name=None, pollAtLaunch=False,
-                 buildPushesWithNoCommits=False, only_tags=False,
-                 sshPrivateKey=None, sshHostKey=None, sshKnownHosts=None):
+    def __init__(self, repourl, branches=None, branch=None, workdir=None, pollInterval=10 * 60,
+                 gitbin="git", usetimestamps=True, category=None, project=None, pollinterval=-2,
+                 fetch_refspec=None, encoding="utf-8", name=None, pollAtLaunch=False,
+                 buildPushesWithNoCommits=False, only_tags=False, sshPrivateKey=None,
+                 sshHostKey=None, sshKnownHosts=None, pollRandomDelayMin=0, pollRandomDelayMax=0):
 
         # for backward compatibility; the parameter used to be spelled with 'i'
         if pollinterval != -2:
@@ -66,12 +62,10 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
         if name is None:
             name = repourl
 
-        super().__init__(name=name,
-                         pollInterval=pollInterval,
-                         pollAtLaunch=pollAtLaunch,
-                         sshPrivateKey=sshPrivateKey,
-                         sshHostKey=sshHostKey,
-                         sshKnownHosts=sshKnownHosts)
+        super().__init__(name=name, pollInterval=pollInterval, pollAtLaunch=pollAtLaunch,
+                         pollRandomDelayMin=pollRandomDelayMin,
+                         pollRandomDelayMax=pollRandomDelayMax, sshPrivateKey=sshPrivateKey,
+                         sshHostKey=sshHostKey, sshKnownHosts=sshKnownHosts)
 
         if project is None:
             project = ''
@@ -183,6 +177,11 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
         url = urlquote(self.repourl, '').replace('~', '%7E')
         return "refs/buildbot/{}/{}".format(url, self._removeHeads(branch))
 
+    def poll_should_exit(self):
+        # A single gitpoller loop may take a while on a loaded master, which would block
+        # reconfiguration, so we try to exit early.
+        return not self.doPoll.running
+
     @defer.inlineCallbacks
     def poll(self):
         yield self._checkGitFeatures()
@@ -195,6 +194,10 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
 
         branches = self.branches if self.branches else []
         remote_refs = yield self._getBranches()
+
+        if self.poll_should_exit():
+            return
+
         if branches is True or callable(branches):
             if callable(self.branches):
                 branches = [b for b in remote_refs if self.branches(b)]
@@ -220,6 +223,11 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
         log.msg('gitpoller: processing changes from "{}"'.format(self.repourl))
         for branch in branches:
             try:
+                if self.poll_should_exit():  # pragma: no cover
+                    # Note that we still want to update the last known revisions for the branches
+                    # we did process
+                    break
+
                 rev = yield self._dovccmd(
                     'rev-parse', [self._trackerBranch(branch)], path=self.workdir)
                 revs[branch] = bytes2unicode(rev, self.encoding)
@@ -228,7 +236,7 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
                 log.err(_why="trying to poll branch {} of {}".format(
                         branch, self.repourl))
 
-        self.lastRev.update(revs)
+        self.lastRev = revs
         yield self.setState('lastRev', self.lastRev)
 
     def _get_commit_comments(self, rev):
@@ -247,8 +255,8 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
                 try:
                     stamp = int(git_output)
                 except Exception as e:
-                    log.msg(
-                        'gitpoller: caught exception converting output \'{}\' to timestamp'.format(git_output))
+                    log.msg(('gitpoller: caught exception converting output \'{}\' to timestamp'
+                             ).format(git_output))
                     raise e
                 return stamp
             return None
@@ -308,7 +316,8 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
             return
 
         # get the change list
-        revListArgs = (['--format=%H', '{}'.format(newRev)] +
+        revListArgs = (['--ignore-missing'] +
+                       ['--format=%H', '{}'.format(newRev)] +
                        ['^' + rev
                         for rev in sorted(self.lastRev.values())] +
                        ['--'])
@@ -430,15 +439,15 @@ class GitPoller(base.PollingChangeSource, StateMixin, GitMixin):
 
         full_args += [command] + args
 
-        res = yield utils.getProcessOutputAndValue(self.gitbin,
-            full_args, path=path, env=full_env)
-        (stdout, stderr, code) = res
+        res = yield runprocess.run_process(self.master.reactor, [self.gitbin] + full_args, path,
+                                           env=full_env)
+        (code, stdout, stderr) = res
         stdout = bytes2unicode(stdout, self.encoding)
         stderr = bytes2unicode(stderr, self.encoding)
         if code != 0:
             if code == 128:
                 raise GitError('command {} in {} on repourl {} failed with exit code {}: {}'.format(
                                full_args, path, self.repourl, code, stderr))
-            raise EnvironmentError('command {} in {} on repourl {} failed with exit code {}: {}'.format(
-                                   full_args, path, self.repourl, code, stderr))
+            raise EnvironmentError(('command {} in {} on repourl {} failed with exit code {}: {}'
+                                    ).format(full_args, path, self.repourl, code, stderr))
         return stdout.strip()

@@ -19,10 +19,24 @@ from twisted.internet import defer
 from buildbot.worker.protocols import base
 
 
+class FakeTrivialConnection(base.Connection):
+
+    info = {}
+
+    def __init__(self):
+        super().__init__("Fake")
+
+    def loseConnection(self):
+        self.notifyDisconnected()
+
+    def remoteSetBuilderList(self, builders):
+        return defer.succeed(None)
+
+
 class FakeConnection(base.Connection):
 
-    def __init__(self, master, worker):
-        super().__init__(master, worker)
+    def __init__(self, worker):
+        super().__init__(worker.workername)
         self._connected = True
         self.remoteCalls = []
         self.builders = {}  # { name : isBusy }
@@ -34,6 +48,9 @@ class FakeConnection(base.Connection):
             'basedir': '/w',
             'system': 'nt',
         }
+
+    def loseConnection(self):
+        self.notifyDisconnected()
 
     def remotePrint(self, message):
         self.remoteCalls.append(('remotePrint', message))

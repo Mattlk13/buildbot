@@ -26,6 +26,7 @@ import requests
 from twisted.internet import defer
 from twisted.internet import threads
 
+import buildbot
 from buildbot import config
 from buildbot.process.properties import Properties
 from buildbot.util import bytes2unicode
@@ -118,7 +119,7 @@ class OAuth2Auth(auth.AuthBase):
             oauth_params['state'] = urlencode(dict(redirect=redirect_url))
         oauth_params.update(self.authUriAdditionalParams)
         sorted_oauth_params = sorted(oauth_params.items(), key=lambda val: val[0])
-        return "%s?%s" % (self.authUri, urlencode(sorted_oauth_params))
+        return "{}?{}".format(self.authUri, urlencode(sorted_oauth_params))
 
     def createSessionFromToken(self, token):
         s = requests.Session()
@@ -225,12 +226,14 @@ class GitHubAuth(OAuth2Auth):
                  **kwargs):
 
         super().__init__(clientId, clientSecret, autologin, **kwargs)
+        self.apiResourceEndpoint = None
         if serverURL is not None:
             # setup for enterprise github
-            if serverURL.endswith("/"):
-                serverURL = serverURL[:-1]
+            serverURL = serverURL.rstrip("/")
             # v3 is accessible directly at /api/v3 for enterprise, but directly for SaaS..
             self.resourceEndpoint = serverURL + '/api/v3'
+            # v4 is accessible endpoint for enterprise
+            self.apiResourceEndpoint = serverURL + '/api/graphql'
 
             self.authUri = '{0}/login/oauth/authorize'.format(serverURL)
             self.tokenUri = '{0}/login/oauth/access_token'.format(serverURL)
@@ -247,7 +250,8 @@ class GitHubAuth(OAuth2Auth):
                     'Retrieving team membership information using GitHubAuth is only '
                     'possible using GitHub api v4.')
         else:
-            self.apiResourceEndpoint = self.serverURL + '/graphql'
+            defaultGraphqlEndpoint = self.serverURL + '/graphql'
+            self.apiResourceEndpoint = self.apiResourceEndpoint or defaultGraphqlEndpoint
         if getTeamsMembership:
             # GraphQL name aliases must comply with /^[_a-zA-Z][_a-zA-Z0-9]*$/
             self._orgname_slug_sub_re = re.compile(r'[^_a-zA-Z0-9]')
@@ -283,6 +287,15 @@ class GitHubAuth(OAuth2Auth):
                     email=user['email'],
                     username=user['login'],
                     groups=[org['login'] for org in orgs])
+
+    def createSessionFromToken(self, token):
+        s = requests.Session()
+        s.headers = {
+            'Authorization': 'token ' + token['access_token'],
+            'User-Agent': 'buildbot/{}'.format(buildbot.version),
+        }
+        s.verify = self.sslVerify
+        return s
 
     def getUserInfoFromOAuthClient_v4(self, c):
         graphql_query = textwrap.dedent('''
@@ -337,8 +350,8 @@ class GitHubAuth(OAuth2Auth):
                         # identical with the inclusion of the organization
                         # since different organizations might share a common
                         # team name
-                        teams.add('%s/%s' % (orgs_name_slug_mapping[org], node['node']['name']))
-                        teams.add('%s/%s' % (orgs_name_slug_mapping[org], node['node']['slug']))
+                        teams.add('{}/{}'.format(orgs_name_slug_mapping[org], node['node']['name']))
+                        teams.add('{}/{}'.format(orgs_name_slug_mapping[org], node['node']['slug']))
                 user_info['groups'].extend(sorted(teams))
         if self.debug:
             log.info('{klass} User Details: {user_info}',
@@ -353,10 +366,10 @@ class GitLabAuth(OAuth2Auth):
 
     def __init__(self, instanceUri, clientId, clientSecret, **kwargs):
         uri = instanceUri.rstrip("/")
-        self.authUri = "%s/oauth/authorize" % uri
-        self.tokenUri = "%s/oauth/token" % uri
-        self.resourceEndpoint = "%s/api/v4" % uri
-        super(GitLabAuth, self).__init__(clientId, clientSecret, **kwargs)
+        self.authUri = "{}/oauth/authorize".format(uri)
+        self.tokenUri = "{}/oauth/token".format(uri)
+        self.resourceEndpoint = "{}/api/v4".format(uri)
+        super().__init__(clientId, clientSecret, **kwargs)
 
     def getUserInfoFromOAuthClient(self, c):
         user = self.get(c, "/user")

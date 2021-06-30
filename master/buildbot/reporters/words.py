@@ -40,6 +40,7 @@ from buildbot.process.results import SUCCESS
 from buildbot.process.results import WARNINGS
 from buildbot.process.results import statusToString
 from buildbot.reporters import utils
+from buildbot.util import epoch2datetime
 from buildbot.util import service
 from buildbot.util import unicode2bytes
 
@@ -145,12 +146,13 @@ class Channel(service.AsyncService):
                           "(Success|Warnings|Failure|Exception))$").match(event):
             raise UsageError("Try '" + self.bot.commandPrefix + "notify on|off _EVENT_'.")
 
+    @defer.inlineCallbacks
     def list_notified_events(self):
         if self.notify_events:
-            self.send("The following events are being notified: {}."
-                      .format(", ".join(sorted(self.notify_events))))
+            yield self.send("The following events are being notified: {}."
+                            .format(", ".join(sorted(self.notify_events))))
         else:
-            self.send("No events are being notified.")
+            yield self.send("No events are being notified.")
 
     def notify_for(self, *events):
         for event in events:
@@ -173,6 +175,7 @@ class Channel(service.AsyncService):
                 return self.workerMissing(msg)
             if key[2] == 'connected':
                 return self.workerConnected(msg)
+            return None
 
         for e, f in (("new", buildStarted),             # BuilderStarted
                      ("finished", buildFinished)):      # BuilderFinished
@@ -348,19 +351,22 @@ class Channel(service.AsyncService):
 
         return False
 
+    @defer.inlineCallbacks
     def workerMissing(self, worker):
         self.missing_workers.add(worker['workerid'])
         if self.notify_for('worker'):
-            self.send("Worker `{name}` is missing. It was seen last on {last_connection}.".format(**worker))
-        self.bot.saveMissingWorkers()
+            self.send(("Worker `{name}` is missing. It was seen last on "
+                       "{last_connection}.").format(**worker))
+        yield self.bot.saveMissingWorkers()
 
+    @defer.inlineCallbacks
     def workerConnected(self, worker):
         workerid = worker['workerid']
         if workerid in self.missing_workers:
             self.missing_workers.remove(workerid)
             if self.notify_for('worker'):
                 self.send("Worker `{name}` is back online.".format(**worker))
-            self.bot.saveMissingWorkers()
+            yield self.bot.saveMissingWorkers()
 
 
 class Contact:
@@ -441,6 +447,7 @@ class Contact:
             return self.access_denied
         return method
 
+    @defer.inlineCallbacks
     def handleMessage(self, message, **kwargs):
         message = message.lstrip()
         parts = message.split(' ', 1)
@@ -462,29 +469,25 @@ class Contact:
         if not meth:
             if message[-1] == '!':
                 self.send("What you say!")
-                return defer.succeed(None)
+                return None
             elif cmd.startswith(self.bot.commandPrefix):
                 self.send("I don't get this '{}'...".format(cmd))
                 meth = self.command_COMMANDS
             else:
                 if self.is_private_chat:
                     self.send("Say what?")
-                return defer.succeed(None)
+                return None
 
-        d = defer.maybeDeferred(meth, args.strip(), **kwargs)
-
-        @d.addErrback
-        def usageError(f):
-            f.trap(UsageError)
-            self.send(str(f.value))
-
-        @d.addErrback
-        def logErr(f):
-            self.bot.log_err(f)
+        try:
+            result = yield meth(args.strip(), **kwargs)
+        except UsageError as e:
+            self.send(str(e))
+            return None
+        except Exception as e:
+            self.bot.log_err(e)
             self.send("Something bad happened (see logs)")
-
-        d.addErrback(self.bot.log_err)
-        return d
+            return None
+        return result
 
     def splitArgs(self, args):
         """Returns list of arguments parsed by shlex.split() or
@@ -492,7 +495,7 @@ class Contact:
         try:
             return shlex.split(args)
         except ValueError as e:
-            raise UsageError(e)
+            raise UsageError(e) from e
 
     def command_HELLO(self, args, **kwargs):
         """say hello"""
@@ -520,7 +523,8 @@ class Contact:
             pass
 
         if not args:
-            raise UsageError("Try '" + self.bot.commandPrefix + "list [all|N] builders|workers|changes'.")
+            raise UsageError(("Try '{}list [all|N] builders|workers|changes'."
+                              ).format(self.bot.commandPrefix))
 
         if args[0] == 'builders':
             bdicts = yield self.bot.getAllBuilders()
@@ -548,21 +552,20 @@ class Contact:
                     response.append(worker['name'])
                     response.append("[offline]")
             self.send(' '.join(response))
-            return
 
         elif args[0] == 'changes':
             if all:
                 self.send("Do you really want me to list all changes? It can be thousands!\n"
-                          "If you want to be flooded, specify the maximum number of changes to show.\n"
+                          "If you want to be flooded, specify the maximum number of changes "
+                          "to show.\n"
                           "Right now, I will show up to 100 recent changes.")
                 num = 100
-
-            changes = yield self.master.db.changes.getRecentChanges(num)
+            changes = yield self.master.data.get(('changes',), order=['-changeid'], limit=num)
 
             response = ["I found the following recent changes:"]
             for change in reversed(changes):
                 change['comment'] = change['comments'].split('\n')[0]
-                change['date'] = change['when_timestamp'].strftime('%Y-%m-%d %H:%M')
+                change['date'] = epoch2datetime(change['when_timestamp']).strftime('%Y-%m-%d %H:%M')
                 response.append(
                     "{comment})\n"
                     "Author: {author}\n"
@@ -605,6 +608,7 @@ class Contact:
             self.send('\n'.join(response))
     command_STATUS.usage = "status [_which_] - list status of a builder (or all builders)"
 
+    @defer.inlineCallbacks
     def command_NOTIFY(self, args, **kwargs):
         """notify me about build events"""
         args = self.splitArgs(args)
@@ -620,7 +624,7 @@ class Contact:
             self.channel.add_notification_events(events)
 
             if action == "on":
-                self.channel.list_notified_events()
+                yield self.channel.list_notified_events()
             self.bot.saveNotifyEvents()
 
         elif action in ("off", "off-quiet"):
@@ -630,11 +634,11 @@ class Contact:
                 self.channel.remove_all_notification_events()
 
             if action == "off":
-                self.channel.list_notified_events()
+                yield self.channel.list_notified_events()
             self.bot.saveNotifyEvents()
 
         elif action == "list":
-            self.channel.list_notified_events()
+            yield self.channel.list_notified_events()
 
         else:
             raise UsageError("Try '" + self.bot.commandPrefix + "notify on|off|list [_EVENT_]'.")
@@ -662,6 +666,7 @@ class Contact:
         def watchForCompleteEvent(key, msg):
             if key[-1] in ('finished', 'complete'):
                 return self.channel.buildFinished(msg, watched=True)
+            return None
 
         for build in builds:
             startConsuming = self.master.mq.startConsuming
@@ -770,8 +775,9 @@ class Contact:
         else:
             self.send("Force build successfully requested.")
 
-    command_FORCE.usage = ("force build [--codebase=CODEBASE] [--branch=branch] [--revision=revision]"
-                           " [--props=prop1=val1,prop2=val2...] _which_ _reason_ - Force a build")
+    command_FORCE.usage = ("force build [--codebase=CODEBASE] [--branch=branch] "
+                           "[--revision=revision] [--props=prop1=val1,prop2=val2...] "
+                           "_which_ _reason_ - Force a build")
 
     @defer.inlineCallbacks
     @dangerousCommand
@@ -1182,7 +1188,8 @@ class StatusBot(service.AsyncMultiService):
     def getBuilder(self, buildername=None, builderid=None):
         if buildername:
             bdicts = yield self.master.data.get(('builders',),
-                                                filters=[resultspec.Filter('name', 'eq', [buildername])])
+                                                filters=[resultspec.Filter('name', 'eq',
+                                                                           [buildername])])
             if bdicts:
                 # Could there be more than one? One is enough.
                 bdict = bdicts[0]

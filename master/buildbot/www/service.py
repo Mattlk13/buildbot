@@ -44,7 +44,8 @@ from buildbot.www import rest
 from buildbot.www import sse
 from buildbot.www import ws
 
-# as per: http://security.stackexchange.com/questions/95972/what-are-requirements-for-hmac-secret-key
+# as per:
+# http://security.stackexchange.com/questions/95972/what-are-requirements-for-hmac-secret-key
 # we need 128 bit key for HS256
 SESSION_SECRET_LENGTH = 128
 SESSION_SECRET_ALGORITHM = "HS256"
@@ -81,10 +82,10 @@ class BuildbotSession(server.Session):
             decoded = jwt.decode(token, self.site.session_secret, algorithms=[
                                  SESSION_SECRET_ALGORITHM])
         except jwt.exceptions.ExpiredSignatureError as e:
-            raise KeyError(str(e))
+            raise KeyError(str(e)) from e
         except Exception as e:
             log.err(e, "while decoding JWT session")
-            raise KeyError(str(e))
+            raise KeyError(str(e)) from e
         # might raise KeyError: will be caught by caller, which makes the token invalid
         self.user_info = decoded['user_info']
 
@@ -151,6 +152,10 @@ class BuildbotSite(server.Site):
         return LogFile.fromFullPath(
             path, rotateLength=self.rotateLength, maxRotatedFiles=self.maxRotatedFiles)
 
+    def getResourceFor(self, request):
+        request.responseHeaders.removeHeader('Server')
+        return server.Site.getResourceFor(self, request)
+
     def setSessionSecret(self, secret):
         self.session_secret = secret
 
@@ -214,7 +219,7 @@ class WWWService(service.ReconfigurableServiceMixin, service.AsyncMultiService):
 
         if www['port'] != self.port:
             if self.port_service:
-                yield defer.maybeDeferred(self.port_service.disownServiceParent)
+                yield self.port_service.disownServiceParent()
                 self.port_service = None
 
             self.port = www['port']
@@ -260,8 +265,7 @@ class WWWService(service.ReconfigurableServiceMixin, service.AsyncMultiService):
         for key, plugin in list(new_config.www.get('plugins', {}).items()):
             log.msg("initializing www plugin %r" % (key,))
             if key not in self.apps:
-                raise RuntimeError(
-                    "could not find plugin %s; is it installed?" % (key,))
+                raise RuntimeError("could not find plugin {}; is it installed?".format(key))
             app = self.apps.get(key)
             app.setMaster(self.master)
             app.setConfiguration(plugin)
@@ -360,7 +364,8 @@ class WWWService(service.ReconfigurableServiceMixin, service.AsyncMultiService):
             # we encode that in hex for db storage convenience
             return bytes2unicode(hexlify(os.urandom(int(SESSION_SECRET_LENGTH / 8))))
 
-        session_secret = yield state.atomicCreateState(objectid, "session_secret", create_session_secret)
+        session_secret = yield state.atomicCreateState(objectid, "session_secret",
+                                                       create_session_secret)
         self.site.setSessionSecret(session_secret)
 
     def setupProtectedResource(self, resource_obj, checkers):

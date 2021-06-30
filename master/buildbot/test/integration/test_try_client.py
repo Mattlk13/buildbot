@@ -52,7 +52,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
             with open(tmpfile, "w") as f:
                 f.write(pp.job)
             os.rename(tmpfile, newfile)
-            log.msg("wrote jobfile %s" % newfile)
+            log.msg("wrote jobfile {}".format(newfile))
             # get the scheduler to poll this directory now
             d = self.sch.watcher.poll()
             d.addErrback(log.err, 'while polling')
@@ -66,10 +66,10 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
 
         self.patch(reactor, 'spawnProcess', spawnProcess)
 
+        self.sourcestamp = tryclient.SourceStamp(branch='br', revision='rr', patch=(0, '++--'))
+
         def getSourceStamp(vctype, treetop, branch=None, repository=None):
-            return defer.succeed(
-                tryclient.SourceStamp(branch='br', revision='rr',
-                                      patch=(0, '++--')))
+            return defer.succeed(self.sourcestamp)
         self.patch(tryclient, 'getSourceStamp', getSourceStamp)
 
         self.output = []
@@ -80,7 +80,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
 
         def output(*msg):
             msg = ' '.join(map(str, msg))
-            log.msg("output: %s" % msg)
+            log.msg("output: {}".format(msg))
             self.output.append(msg)
         self.patch(tryclient, 'output', output)
 
@@ -108,7 +108,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
         if isinstance(self.sch, trysched.Try_Userpass):
             def getSchedulerPort():
                 if not self.sch.registrations:
-                    return
+                    return None
                 self.serverPort = self.sch.registrations[0].getPort()
                 log.msg("Scheduler registered at port %d" % self.serverPort)
                 return True
@@ -116,7 +116,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
 
     def runClient(self, config):
         self.clt = tryclient.Try(config)
-        return self.clt.run(_inTests=True)
+        return self.clt.run_impl()
 
     @defer.inlineCallbacks
     def test_userpass_no_wait(self):
@@ -124,7 +124,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
             trysched.Try_Userpass('try', ['a'], 0, [('u', b'p')]))
         yield self.runClient({
             'connect': 'pb',
-            'master': '127.0.0.1:%s' % self.serverPort,
+            'master': '127.0.0.1:{}'.format(self.serverPort),
             'username': 'u',
             'passwd': b'p',
         })
@@ -144,7 +144,7 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
             trysched.Try_Userpass('try', ['a'], 0, [('u', b'p')]))
         yield self.runClient({
             'connect': 'pb',
-            'master': '127.0.0.1:%s' % self.serverPort,
+            'master': '127.0.0.1:{}'.format(self.serverPort),
             'username': 'u',
             'passwd': b'p',
             'wait': True,
@@ -161,13 +161,65 @@ class Schedulers(RunMasterBase, www.RequiresWwwMixin):
         self.assertEqual(len(buildsets), 1)
 
     @defer.inlineCallbacks
+    def test_userpass_wait_bytes(self):
+        self.sourcestamp = tryclient.SourceStamp(branch=b'br', revision=b'rr', patch=(0, b'++--'))
+
+        yield self.startMaster(
+            trysched.Try_Userpass('try', ['a'], 0, [('u', b'p')]))
+        yield self.runClient({
+            'connect': 'pb',
+            'master': '127.0.0.1:{}'.format(self.serverPort),
+            'username': 'u',
+            'passwd': b'p',
+            'wait': True,
+        })
+        self.assertEqual(self.output, [
+            "using 'pb' connect method",
+            'job created',
+            'Delivering job; comment= None',
+            'job has been delivered',
+            'All Builds Complete',
+            'a: success (build successful)',
+        ])
+        buildsets = yield self.master.db.buildsets.getBuildsets()
+        self.assertEqual(len(buildsets), 1)
+
+    @defer.inlineCallbacks
+    def test_userpass_wait_dryrun(self):
+        yield self.startMaster(
+            trysched.Try_Userpass('try', ['a'], 0, [('u', b'p')]))
+        yield self.runClient({
+            'connect': 'pb',
+            'master': '127.0.0.1:{}'.format(self.serverPort),
+            'username': 'u',
+            'passwd': b'p',
+            'wait': True,
+            'dryrun': True,
+        })
+        self.assertEqual(self.output, [
+            "using 'pb' connect method",
+            'job created',
+            'Job:\n'
+            '\tRepository: \n'
+            '\tProject: \n'
+            '\tBranch: br\n'
+            '\tRevision: rr\n'
+            '\tBuilders: None\n'
+            '++--',
+            'job has been delivered',
+            'All Builds Complete',
+        ])
+        buildsets = yield self.master.db.buildsets.getBuildsets()
+        self.assertEqual(len(buildsets), 0)
+
+    @defer.inlineCallbacks
     def test_userpass_list_builders(self):
         yield self.startMaster(
             trysched.Try_Userpass('try', ['a'], 0, [('u', b'p')]))
         yield self.runClient({
             'connect': 'pb',
             'get-builder-names': True,
-            'master': '127.0.0.1:%s' % self.serverPort,
+            'master': '127.0.0.1:{}'.format(self.serverPort),
             'username': 'u',
             'passwd': b'p',
         })
@@ -230,8 +282,8 @@ def masterConfig(extra_config):
 
     class MyBuildStep(BuildStep):
 
-        def start(self):
-            self.finished(results.SUCCESS)
+        def run(self):
+            return results.SUCCESS
 
     c['change_source'] = []
     c['schedulers'] = []  # filled in above

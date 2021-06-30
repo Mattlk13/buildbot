@@ -17,6 +17,7 @@
 Steps and objects related to rpmlint.
 """
 
+from twisted.internet import defer
 
 from buildbot.steps.package import util as pkgutil
 from buildbot.steps.shell import Test
@@ -55,7 +56,6 @@ class RpmLint(Test):
             self.fileloc = fileloc
         if config:
             self.config = config
-        self.addFactoryArguments(fileloc=fileloc, config=config)
 
         self.command = ["rpmlint", "-i"]
         if self.config:
@@ -65,7 +65,8 @@ class RpmLint(Test):
         self.obs = pkgutil.WEObserver()
         self.addLogObserver('stdio', self.obs)
 
-    def createSummary(self, log):
+    @defer.inlineCallbacks
+    def createSummary(self):
         """
         Create nice summary logs.
 
@@ -74,6 +75,6 @@ class RpmLint(Test):
         warnings = self.obs.warnings
         errors = []
         if warnings:
-            self.addCompleteLog('%d Warnings' % len(warnings), "\n".join(warnings))
+            yield self.addCompleteLog('%d Warnings' % len(warnings), "\n".join(warnings))
         if errors:
-            self.addCompleteLog('%d Errors' % len(errors), "\n".join(errors))
+            yield self.addCompleteLog('%d Errors' % len(errors), "\n".join(errors))

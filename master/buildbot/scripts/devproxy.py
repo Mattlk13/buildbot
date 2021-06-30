@@ -77,7 +77,7 @@ class DevProxy:
         try:
             await self.fetch_config_from_upstream()
         except aiohttp.ClientConnectionError as e:
-            raise RuntimeError("Unable to connect to buildbot master" + str(e))
+            raise RuntimeError("Unable to connect to buildbot master" + str(e)) from e
 
     async def on_cleanup(self, app):
         await self.session.close()
@@ -105,7 +105,7 @@ class DevProxy:
                     elif msg.type == aiohttp.WSMsgType.PONG:
                         await ws_to.pong()
                     else:
-                        raise ValueError('unexpected message type: %s' % msg)
+                        raise ValueError('unexpected message type: {}'.format(msg))
 
             # keep forwarding websocket data in both directions
             await asyncio.wait(

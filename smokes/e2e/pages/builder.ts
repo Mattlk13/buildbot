@@ -2,7 +2,9 @@
 // will be called by the different tests
 
 import { BasePage } from "./base";
+import { ForcePage } from './force';
 import { browser, by, element, ExpectedConditions as EC } from 'protractor';
+import { bbrowser } from '../utils';
 
 export class BuilderPage extends BasePage {
     builder: string;
@@ -13,63 +15,108 @@ export class BuilderPage extends BasePage {
         this.forceName=forcename;
     }
 
-    async goDefault() {
-        await browser.get('#/builders');
-        await browser.wait(EC.urlContains('#/builders'),
-                           10000,
-                           "URL does not contain #/builders");
+    async goBuildersList() {
+        await bbrowser.get('#/builders');
+        await bbrowser.wait(EC.urlContains('#/builders'),
+                            "URL does not contain #/builders");
     }
 
     async go() {
-        await browser.get('#/builders');
-        await browser.wait(EC.urlContains('#/builders'),
-                           10000,
-                           "URL does not contain #/builders");
+        await bbrowser.get('#/builders');
+        await bbrowser.wait(EC.urlContains('#/builders'),
+                            "URL does not contain #/builders");
         let localBuilder = element(By.linkText(this.builder));
-        await browser.wait(EC.elementToBeClickable(localBuilder),
-                           5000,
-                           "local builder not clickable");
+        await bbrowser.wait(EC.elementToBeClickable(localBuilder),
+                            "local builder not clickable");
         await localBuilder.click();
+
+        const isBuilderPage = async () =>
+        {
+            let url = await browser.getCurrentUrl();
+            return (new RegExp("#/builders/[0-9]+$")).test(url);
+        };
+        await bbrowser.wait(isBuilderPage, "Did not got to builder page");
     }
 
     async goForce() {
         await this.go();
         var forceButton = element.all(By.buttonText(this.forceName)).first();
-        await browser.wait(EC.elementToBeClickable(forceButton),
-                           5000,
-                           "force button not clickable");
+        await bbrowser.wait(EC.elementToBeClickable(forceButton),
+                            "force button not clickable");
         await forceButton.click();
+        return new ForcePage();
     }
 
     async goBuild(buildRef) {
         await this.go();
-        var buildLink = element(By.linkText(buildRef.toString()));
-        await browser.wait(EC.elementToBeClickable(buildLink),
-                           5000,
-                           "build link not clickable");
+
+        const matchLink = async (elem) => {
+            return await elem.getText() == buildRef.toString();
+        };
+
+        var buildLink = element.all(By.css('.bb-buildid-link'))
+                               .filter(matchLink)
+                               .first();
+        await bbrowser.wait(EC.elementToBeClickable(buildLink),
+                            "build link not clickable");
         await buildLink.click();
     }
 
-    async getLastSuccessBuildNumber() {
-        let elements = await element.all(By.css('span.badge-status.results_SUCCESS'));
+    async getLastFinishedBuildNumber() {
+        await browser.actions().mouseMove(element(by.css('.navbar-brand'))).perform();
+
+        var buildLinks = element.all(By.css('.bb-buildid-link'));
+        let finishedBuildCss = 'span.badge-status.results_SUCCESS, ' +
+                               'span.badge-status.results_WARNINGS, ' +
+                               'span.badge-status.results_FAILURE, ' +
+                               'span.badge-status.results_SKIPPED, ' +
+                               'span.badge-status.results_EXCEPTION, ' +
+                               'span.badge-status.results_RETRY, ' +
+                               'span.badge-status.results_CANCELLED ';
+        let elements = await buildLinks.all(By.css(finishedBuildCss));
         if (elements.length === 0) {
             return 0;
         }
-        let numberstr = await elements[0].getText();
-        if (numberstr == "SUCCESS") {
-            await browser.actions().mouseMove(element(by.css('.navbar-brand'))).perform();
-            numberstr = await elements[0].getText();
-        }
-        return +numberstr;
+        return +await elements[0].getText();
     }
 
-    async waitNextBuildFinished(reference) {
+
+    async getBuildResult(buildNumber) {
+        const matchElement = async (elem) => {
+            return await elem.getText() == buildNumber.toString();
+        };
+
+        var buildLink = element.all(By.css('.bb-buildid-link')).filter(matchElement);
+        if (await buildLink.count() == 0) {
+            return "NOT FOUND";
+        }
+
+        var resultTypes = [
+            ['.badge-status.results_SUCCESS', "SUCCESS"],
+            ['.badge-status.results_WARNINGS', "WARNINGS"],
+            ['.badge-status.results_FAILURE', "FAILURE"],
+            ['.badge-status.results_SKIPPED', "SKIPPED"],
+            ['.badge-status.results_EXCEPTION', "EXCEPTION"],
+            ['.badge-status.results_RETRY', "RETRY"],
+            ['.badge-status.results_CANCELLED', "CANCELLED"]
+        ];
+
+        for (let i = 0; i < resultTypes.length; i++) {
+            var answer = buildLink.all(By.css(resultTypes[i][0]));
+            if (await answer.count() > 0) {
+                return resultTypes[i][1];
+            }
+        }
+        return "NOT FOUND";
+    }
+
+    async waitBuildFinished(reference) {
         const self = this;
         async function buildCountIncrement() {
-            let currentBuildCount = await self.getLastSuccessBuildNumber();
-            return currentBuildCount == (reference + 1);
+            let currentBuildCount = await self.getLastFinishedBuildNumber();
+            return currentBuildCount == reference;
         }
-        await browser.wait(buildCountIncrement, 20000);
+        await bbrowser.wait(buildCountIncrement, "Build count did not increment");
     }
 
     async waitGoToBuild(expected_buildnumber) {
@@ -87,7 +134,7 @@ export class BuilderPage extends BasePage {
                 }
                 return true;
             }
-        await browser.wait(isInBuild, 20000);
+        await bbrowser.wait(isInBuild, "Did not get into build");
     }
 
     getStopButton() {

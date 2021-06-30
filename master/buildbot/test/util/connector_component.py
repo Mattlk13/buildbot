@@ -60,9 +60,20 @@ class ConnectorComponentMixin(TestReactorMixin, db.RealDatabaseMixin):
     @defer.inlineCallbacks
     def tearDownConnectorComponent(self):
         yield self.tearDownRealDatabase()
-
-        self.db_pool.shutdown()
         # break some reference loops, just for fun
         del self.db.pool
         del self.db.model
         del self.db
+
+
+class FakeConnectorComponentMixin(TestReactorMixin):
+    # Just like ConnectorComponentMixin, but for working with fake database
+
+    def setUpConnectorComponent(self):
+        self.setUpTestReactor()
+        self.master = fakemaster.make_master(self, wantDb=True)
+        self.db = self.master.db
+        self.db.checkForeignKeys = True
+        self.insertTestData = self.db.insertTestData
+
+        return defer.succeed(None)

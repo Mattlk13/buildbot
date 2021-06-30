@@ -13,16 +13,18 @@
 #
 # Copyright Buildbot Team Members
 
+import asyncio
 import os
 import sys
+from io import StringIO
 
 from twisted.internet import threads
 from twisted.python import log
 from twisted.python import threadpool
-from twisted.python.compat import NativeStringIO
 from twisted.trial.unittest import TestCase
 
 import buildbot
+from buildbot.asyncio import TwistedLoop
 from buildbot.process.buildstep import BuildStep
 from buildbot.test.fake.reactor import NonThreadPool
 from buildbot.test.fake.reactor import TestReactor
@@ -54,7 +56,7 @@ class StdoutAssertionsMixin:
     """
 
     def setUpStdoutAssertions(self):
-        self.stdout = NativeStringIO()
+        self.stdout = StringIO()
         self.patch(sys, 'stdout', self.stdout)
 
     def assertWasQuiet(self):
@@ -73,7 +75,8 @@ class TestReactorMixin:
     Mix this in to get TestReactor as self.reactor which is correctly cleaned up
     at the end
     """
-    def setUpTestReactor(self):
+    def setUpTestReactor(self, use_asyncio=False):
+
         self.patch(threadpool, 'ThreadPool', NonThreadPool)
         self.reactor = TestReactor()
         _setReactor(self.reactor)
@@ -88,6 +91,17 @@ class TestReactorMixin:
         # that are run during reactor.stop() may use eventually() themselves.
         self.addCleanup(_setReactor, None)
         self.addCleanup(self.reactor.stop)
+
+        if use_asyncio:
+            self.asyncio_loop = TwistedLoop(self.reactor)
+            asyncio.set_event_loop(self.asyncio_loop)
+            self.asyncio_loop.start()
+
+            def stop():
+                self.asyncio_loop.stop()
+                self.asyncio_loop.close()
+                asyncio.set_event_loop(None)
+            self.addCleanup(stop)
 
 
 class TimeoutableTestCase(TestCase):
@@ -167,3 +181,40 @@ class DebugIntegrationLogsMixin:
 
         if 'BBTRACE' in os.environ:
             enable_trace(self)
+
+
+class BuildDictLookAlike:
+
+    """ a class whose instances compares to any build dict that this reporter is supposed to send
+    out"""
+
+    def __init__(self, extra_keys=None, expected_missing_keys=None, **assertions):
+        self.keys = [
+            'builder', 'builderid', 'buildid', 'buildrequest', 'buildrequestid',
+            'buildset', 'complete', 'complete_at', 'masterid', 'number',
+            'parentbuild', 'parentbuilder', 'properties', 'results',
+            'started_at', 'state_string', 'url', 'workerid'
+            ]
+        if extra_keys:
+            self.keys.extend(extra_keys)
+        if expected_missing_keys is not None:
+            for key in expected_missing_keys:
+                self.keys.remove(key)
+        self.keys.sort()
+        self.assertions = assertions
+
+    def __eq__(self, b):
+        if sorted(b.keys()) != self.keys:
+            print(set(b.keys()) - set(self.keys))
+            print(set(self.keys) - set(b.keys()))
+            return False
+        for k, v in self.assertions.items():
+            if b[k] != v:
+                return False
+        return True
+
+    def __ne__(self, b):
+        return not (self == b)
+
+    def __repr__(self):
+        return "{ any build }"

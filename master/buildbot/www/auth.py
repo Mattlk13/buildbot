@@ -117,11 +117,13 @@ class RemoteUserAuth(AuthBase):
     def maybeAutoLogin(self, request):
         header = request.getHeader(self.header)
         if header is None:
-            raise Error(403, b"missing http header " + self.header + b". Check your reverse proxy config!")
+            msg = b"missing http header " + self.header + b". Check your reverse proxy config!"
+            raise Error(403, msg)
         res = self.headerRegex.match(header)
         if res is None:
-            raise Error(
-                403, b'http header does not match regex! "' + header + b'" not matching ' + self.headerRegex.pattern)
+            msg = b'http header does not match regex! "' + header + b'" not matching ' + \
+                    self.headerRegex.pattern
+            raise Error(403, msg)
         session = request.getSession()
         user_info = {k: bytes2unicode(v) for k, v in res.groupdict().items()}
         if session.user_info != user_info:
@@ -162,7 +164,7 @@ class TwistedICredAuthBase(AuthBase):
 class HTPasswdAuth(TwistedICredAuthBase):
 
     def __init__(self, passwdFile, **kwargs):
-        super().__init__([DigestCredentialFactory(b"md5", b"buildbot"),
+        super().__init__([DigestCredentialFactory(b"MD5", b"buildbot"),
              BasicCredentialFactory(b"buildbot")],
             [FilePasswordDB(passwdFile)],
             **kwargs)
@@ -175,7 +177,7 @@ class UserPasswordAuth(TwistedICredAuthBase):
             users = {user: unicode2bytes(pw) for user, pw in users.items()}
         elif isinstance(users, list):
             users = [(user, unicode2bytes(pw)) for user, pw in users]
-        super().__init__([DigestCredentialFactory(b"md5", b"buildbot"),
+        super().__init__([DigestCredentialFactory(b"MD5", b"buildbot"),
              BasicCredentialFactory(b"buildbot")],
             [InMemoryUsernamePasswordDatabaseDontUse(**dict(users))],
             **kwargs)

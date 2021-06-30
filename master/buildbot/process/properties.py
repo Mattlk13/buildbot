@@ -212,14 +212,16 @@ class Properties(util.ComparableMixin):
     # in the log of state strings
     # so we have the renderable record here which secrets are used that we must remove
     def useSecret(self, secret_value, secret_name):
-        self._used_secrets[secret_value] = "<" + secret_name + ">"
+        if secret_value.strip():
+            self._used_secrets[secret_value] = "<" + secret_name + ">"
 
-    # This method shall then be called to remove secrets from any text that could be logged somewhere
-    # and that could contain secrets
+    # This method shall then be called to remove secrets from any text that could be logged
+    # somewhere and that could contain secrets
     def cleanupTextFromSecrets(self, text):
         # Better be correct and inefficient than efficient and wrong
-        for k, v in self._used_secrets.items():
-            text = text.replace(k, v)
+        secrets = self._used_secrets
+        for k in sorted(secrets, key=len, reverse=True):
+            text = text.replace(k, secrets[k])
         return text
 
 
@@ -227,10 +229,10 @@ class PropertiesMixin:
 
     """
     A mixin to add L{IProperties} methods to a class which does not implement
-    the interface, but which can be coerced to the interface via an adapter.
+    the full interface, only getProperties() function.
 
     This is useful because L{IProperties} methods are often called on L{Build}
-    and L{BuildStatus} objects without first coercing them.
+    objects without first coercing them.
 
     @ivar set_runtime_properties: the default value for the C{runtime}
     parameter of L{setProperty}.
@@ -239,29 +241,95 @@ class PropertiesMixin:
     set_runtime_properties = False
 
     def getProperty(self, propname, default=None):
-        props = IProperties(self)
-        return props.getProperty(propname, default)
+        return self.getProperties().getProperty(propname, default)
 
     def hasProperty(self, propname):
-        props = IProperties(self)
-        return props.hasProperty(propname)
+        return self.getProperties().hasProperty(propname)
 
     has_key = hasProperty
 
     def setProperty(self, propname, value, source='Unknown', runtime=None):
         # source is not optional in IProperties, but is optional here to avoid
         # breaking user-supplied code that fails to specify a source
-        props = IProperties(self)
+        props = self.getProperties()
         if runtime is None:
             runtime = self.set_runtime_properties
         props.setProperty(propname, value, source, runtime=runtime)
 
-    def getProperties(self):
-        return IProperties(self)
-
     def render(self, value):
-        props = IProperties(self)
-        return props.render(value)
+        return self.getProperties().render(value)
+
+
+@implementer(IRenderable)
+class RenderableOperatorsMixin:
+
+    """
+    Properties and Interpolate instances can be manipulated with standard operators.
+    """
+
+    def __eq__(self, other):
+        return _OperatorRenderer(self, other, "==", lambda v1, v2: v1 == v2)
+
+    def __ne__(self, other):
+        return _OperatorRenderer(self, other, "!=", lambda v1, v2: v1 != v2)
+
+    def __lt__(self, other):
+        return _OperatorRenderer(self, other, "<", lambda v1, v2: v1 < v2)
+
+    def __le__(self, other):
+        return _OperatorRenderer(self, other, "<=", lambda v1, v2: v1 <= v2)
+
+    def __gt__(self, other):
+        return _OperatorRenderer(self, other, ">", lambda v1, v2: v1 > v2)
+
+    def __ge__(self, other):
+        return _OperatorRenderer(self, other, ">=", lambda v1, v2: v1 >= v2)
+
+    def __add__(self, other):
+        return _OperatorRenderer(self, other, "+", lambda v1, v2: v1 + v2)
+
+    def __sub__(self, other):
+        return _OperatorRenderer(self, other, "-", lambda v1, v2: v1 - v2)
+
+    def __mul__(self, other):
+        return _OperatorRenderer(self, other, "*", lambda v1, v2: v1 * v2)
+
+    def __truediv__(self, other):
+        return _OperatorRenderer(self, other, "/", lambda v1, v2: v1 / v2)
+
+    def __floordiv__(self, other):
+        return _OperatorRenderer(self, other, "//", lambda v1, v2: v1 // v2)
+
+    def __mod__(self, other):
+        return _OperatorRenderer(self, other, "%", lambda v1, v2: v1 % v2)
+
+    # we cannot use this trick to overload the 'in' operator, as python will force the result
+    # of __contains__ to a boolean, forcing it to True all the time
+    # so we mimic sqlalchemy and make a in_ method
+    def in_(self, other):
+        return _OperatorRenderer(self, other, "in", lambda v1, v2: v1 in v2)
+
+
+@implementer(IRenderable)
+class _OperatorRenderer(RenderableOperatorsMixin, util.ComparableMixin):
+    """
+    An instance of this class renders a comparison given by a operator
+    function with v1 and v2
+
+    """
+
+    compare_attrs = ('fn',)
+
+    def __init__(self, v1, v2, cstr, comparator):
+        self.v1, self.v2, self.comparator, self.cstr = v1, v2, comparator, cstr
+
+    @defer.inlineCallbacks
+    def getRenderingFor(self, props):
+        v1, v2 = yield props.render((self.v1, self.v2))
+        return self.comparator(v1, v2)
+
+    def __repr__(self):
+        return '%r %s %r' % (self.v1, self.cstr, self.v2)
 
 
 class _PropertyMap:
@@ -357,7 +425,7 @@ class WithProperties(util.ComparableMixin):
             for key, val in self.lambda_subs.items():
                 if not callable(val):
                     raise ValueError(
-                        'Value for lambda substitution "%s" must be callable.' % key)
+                        'Value for lambda substitution "{}" must be callable.'.format(key))
         elif lambda_subs:
             raise ValueError(
                 'WithProperties takes either positional or keyword substitutions, not both.')
@@ -408,17 +476,15 @@ class _Lookup(util.ComparableMixin):
         self.elideNoneAs = elideNoneAs
 
     def __repr__(self):
-        return '_Lookup(%r, %r%s%s%s%s)' % (
-            self.value,
-            self.index,
-            ', default=%r' % (self.default,)
-            if self.default is not None else '',
-            ', defaultWhenFalse=False'
-            if not self.defaultWhenFalse else '',
-            ', hasKey=%r' % (self.hasKey,)
-            if self.hasKey != _notHasKey else '',
-            ', elideNoneAs=%r' % (self.elideNoneAs,)
-            if self.elideNoneAs is not None else '')
+        return '_Lookup({}, {}{}{}{}{})'.format(
+            repr(self.value),
+            repr(self.index),
+            ', default={}'.format(repr(self.default)) if self.default is not None else '',
+            ', defaultWhenFalse=False' if not self.defaultWhenFalse else '',
+            ', hasKey={}'.format(repr(self.hasKey)) if self.hasKey != _notHasKey else '',
+            ', elideNoneAs={}'.format(repr(self.elideNoneAs))
+            if self.elideNoneAs is not None else ''
+            )
 
     @defer.inlineCallbacks
     def getRenderingFor(self, build):
@@ -461,6 +527,16 @@ _thePropertyDict = _PropertyDict()
 
 
 @implementer(IRenderable)
+class _WorkerPropertyDict:
+
+    def getRenderingFor(self, build):
+        return build.getBuild().getWorkerInfo()
+
+
+_theWorkerPropertyDict = _WorkerPropertyDict()
+
+
+@implementer(IRenderable)
 class _SecretRenderer:
 
     def __init__(self, secret_name):
@@ -477,7 +553,7 @@ class _SecretRenderer:
         credsservice = properties.master.namedServices['secrets']
         secret_detail = yield credsservice.get(self.secret_name)
         if secret_detail is None:
-            raise KeyError("secret key %s is not found in any provider" % self.secret_name)
+            raise KeyError("secret key {} is not found in any provider".format(self.secret_name))
         properties.useSecret(secret_detail.value, self.secret_name)
         return secret_detail.value
 
@@ -528,7 +604,7 @@ class _Lazy(util.ComparableMixin):
 
 
 @implementer(IRenderable)
-class Interpolate(util.ComparableMixin):
+class Interpolate(RenderableOperatorsMixin, util.ComparableMixin):
 
     """
     This is a marker class, used fairly widely to indicate that we
@@ -550,7 +626,6 @@ class Interpolate(util.ComparableMixin):
             self.interpolations = {}
             self._parse(fmtstring)
 
-    # TODO: add case below for when there's no args or kwargs..
     def __repr__(self):
         if self.args:
             return 'Interpolate(%r, *%r)' % (self.fmtstring, self.args)
@@ -566,7 +641,7 @@ class Interpolate(util.ComparableMixin):
             prop, repl = arg, None
         if not Interpolate.identifier_re.match(prop):
             config.error(
-                "Property name must be alphanumeric for prop Interpolation '%s'" % arg)
+                "Property name must be alphanumeric for prop Interpolation '{}'".format(arg))
             prop = repl = None
 
         return _thePropertyDict, prop, repl
@@ -589,19 +664,26 @@ class Interpolate(util.ComparableMixin):
                 codebase, attr = arg.split(":", 1)
                 repl = None
             except ValueError:
-                config.error(
-                    "Must specify both codebase and attribute for src Interpolation '%s'" % arg)
+                config.error(("Must specify both codebase and attribute for "
+                              "src Interpolation '{}'").format(arg))
                 return {}, None, None
 
         if not Interpolate.identifier_re.match(codebase):
             config.error(
-                "Codebase must be alphanumeric for src Interpolation '%s'" % arg)
+                "Codebase must be alphanumeric for src Interpolation '{}'".format(arg))
             codebase = attr = repl = None
         if not Interpolate.identifier_re.match(attr):
             config.error(
-                "Attribute must be alphanumeric for src Interpolation '%s'" % arg)
+                "Attribute must be alphanumeric for src Interpolation '{}'".format(arg))
             codebase = attr = repl = None
         return _SourceStampDict(codebase), attr, repl
+
+    def _parse_worker(self, arg):
+        try:
+            prop, repl = arg.split(":", 1)
+        except ValueError:
+            prop, repl = arg, None
+        return _theWorkerPropertyDict, prop, repl
 
     def _parse_kw(self, arg):
         try:
@@ -610,7 +692,7 @@ class Interpolate(util.ComparableMixin):
             kw, repl = arg, None
         if not Interpolate.identifier_re.match(kw):
             config.error(
-                "Keyword must be alphanumeric for kw Interpolation '%s'" % arg)
+                "Keyword must be alphanumeric for kw Interpolation '{}'".format(arg))
             kw = repl = None
         return _Lazy(self.kwargs), kw, repl
 
@@ -619,12 +701,12 @@ class Interpolate(util.ComparableMixin):
             key, arg = fmt.split(":", 1)
         except ValueError:
             config.error(
-                "invalid Interpolate substitution without selector '%s'" % fmt)
-            return
+                "invalid Interpolate substitution without selector '{}'".format(fmt))
+            return None
 
         fn = getattr(self, "_parse_" + key, None)
         if not fn:
-            config.error("invalid Interpolate selector '%s'" % key)
+            config.error("invalid Interpolate selector '{}'".format(key))
             return None
         return fn(arg)
 
@@ -669,7 +751,7 @@ class Interpolate(util.ComparableMixin):
         try:
             truePart, falsePart = self._splitBalancedParen(delim, repl[1:])
         except ValueError:
-            config.error("invalid Interpolate ternary expression '%s' with delimiter '%s'" % (
+            config.error("invalid Interpolate ternary expression '{}' with delimiter '{}'".format(
                 repl[1:], repl[0]))
             return None
         return _Lookup(d, kw,
@@ -700,8 +782,7 @@ class Interpolate(util.ComparableMixin):
                         self.interpolations[key] = fn(d, kw, tail)
                         break
                 if key not in self.interpolations:
-                    config.error(
-                        "invalid Interpolate default type '%s'" % repl[0])
+                    config.error("invalid Interpolate default type '{}'".format(repl[0]))
 
     def getRenderingFor(self, build):
         props = build.getProperties()
@@ -717,30 +798,7 @@ class Interpolate(util.ComparableMixin):
 
 
 @implementer(IRenderable)
-class _ComparisonRenderer(util.ComparableMixin):
-    """
-    An instance of this class renders a comparison given by a comparator
-    function with v1 and v2
-
-    """
-
-    compare_attrs = ('fn',)
-
-    def __init__(self, v1, v2, cstr, comparator):
-        self.v1, self.v2, self.comparator, self.cstr = v1, v2, comparator, cstr
-
-    @defer.inlineCallbacks
-    def getRenderingFor(self, props):
-        v1 = yield props.render(self.v1)
-        v2 = yield props.render(self.v2)
-        return self.comparator(v1, v2)
-
-    def __repr__(self):
-        return '%r %r %r' % (self.v1, self.cstr, self.v2)
-
-
-@implementer(IRenderable)
-class Property(util.ComparableMixin):
+class Property(RenderableOperatorsMixin, util.ComparableMixin):
 
     """
     An instance of this class renders a property of a build.
@@ -759,24 +817,6 @@ class Property(util.ComparableMixin):
         self.key = key
         self.default = default
         self.defaultWhenFalse = defaultWhenFalse
-
-    def __eq__(self, other):
-        return _ComparisonRenderer(self, other, "==", lambda v1, v2: v1 == v2)
-
-    def __ne__(self, other):
-        return _ComparisonRenderer(self, other, "!=", lambda v1, v2: v1 != v2)
-
-    def __lt__(self, other):
-        return _ComparisonRenderer(self, other, "<", lambda v1, v2: v1 < v2)
-
-    def __le__(self, other):
-        return _ComparisonRenderer(self, other, "<=", lambda v1, v2: v1 <= v2)
-
-    def __gt__(self, other):
-        return _ComparisonRenderer(self, other, ">", lambda v1, v2: v1 > v2)
-
-    def __ge__(self, other):
-        return _ComparisonRenderer(self, other, ">=", lambda v1, v2: v1 >= v2)
 
     def __repr__(self):
         return "Property({0})".format(self.key)
@@ -798,7 +838,7 @@ class Property(util.ComparableMixin):
 
 
 @implementer(IRenderable)
-class FlattenList(util.ComparableMixin):
+class FlattenList(RenderableOperatorsMixin, util.ComparableMixin):
 
     """
     An instance of this class flattens all nested lists in a list

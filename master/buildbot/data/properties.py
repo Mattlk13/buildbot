@@ -34,11 +34,15 @@ class BuildPropertiesEndpoint(base.Endpoint):
 
     isCollection = False
     pathPatterns = """
+        /builders/n:builderid/builds/n:build_number/properties
         /builds/n:buildid/properties
     """
 
     def get(self, resultSpec, kwargs):
-        return self.master.db.builds.getBuildProperties(kwargs['buildid'])
+        buildid = kwargs.get("buildid", None)
+        if buildid is None:
+            buildid = kwargs.get("build_number")
+        return self.master.db.builds.getBuildProperties(buildid)
 
 
 class Properties(base.ResourceType):
@@ -51,9 +55,10 @@ class Properties(base.ResourceType):
     entityType = types.SourcedProperties()
 
     def generateUpdateEvent(self, buildid, newprops):
-        # This event cannot use the produceEvent mechanism, as the properties resource type is a bit specific
-        # (this is a dictionary collection)
-        # We only send the new properties, and count on the client to merge the resulting properties dict
+        # This event cannot use the produceEvent mechanism, as the properties resource type is a bit
+        # specific (this is a dictionary collection)
+        # We only send the new properties, and count on the client to merge the resulting properties
+        # dict
         # We are good, as there is no way to delete a property.
         routingKey = ('builds', str(buildid), "properties", "update")
         newprops = self.sanitizeMessage(newprops)

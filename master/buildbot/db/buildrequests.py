@@ -128,7 +128,8 @@ class BuildRequestsConnectorComponent(base.DBConnectorComponent):
 
             res = conn.execute(q)
 
-            return deduplicateBrdict([self._brdictFromRow(row, self.db.master.masterid) for row in res.fetchall()])
+            return deduplicateBrdict([self._brdictFromRow(row, self.db.master.masterid)
+                                      for row in res.fetchall()])
         res = yield self.db.pool.do(thd)
         return res
 
@@ -149,9 +150,9 @@ class BuildRequestsConnectorComponent(base.DBConnectorComponent):
                     dict(brid=id, masterid=self.db.master.masterid,
                          claimed_at=claimed_at)
                     for id in brids])
-            except (sa.exc.IntegrityError, sa.exc.ProgrammingError):
+            except (sa.exc.IntegrityError, sa.exc.ProgrammingError) as e:
                 transaction.rollback()
-                raise AlreadyClaimedError()
+                raise AlreadyClaimedError() from e
 
             transaction.commit()
 

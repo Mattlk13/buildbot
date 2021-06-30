@@ -136,14 +136,14 @@ class SchedulersConnectorComponent(base.DBConnectorComponent):
                 q = sch_mst_tbl.delete(
                     whereclause=(sch_mst_tbl.c.schedulerid == schedulerid))
                 conn.execute(q).close()
-                return
+                return None
 
             # try a blind insert..
             try:
                 q = sch_mst_tbl.insert()
                 conn.execute(q,
                              dict(schedulerid=schedulerid, masterid=masterid)).close()
-            except (sa.exc.IntegrityError, sa.exc.ProgrammingError):
+            except (sa.exc.IntegrityError, sa.exc.ProgrammingError) as e:
                 # someone already owns this scheduler, but who?
                 join = self.db.model.masters.outerjoin(
                     sch_mst_tbl,
@@ -155,9 +155,10 @@ class SchedulersConnectorComponent(base.DBConnectorComponent):
                 row = conn.execute(q).fetchone()
                 # ok, that was us, so we just do nothing
                 if row['masterid'] == masterid:
-                    return
+                    return None
                 raise SchedulerAlreadyClaimedError(
-                    "already claimed by {}".format(row['name']))
+                    "already claimed by {}".format(row['name'])) from e
+            return None
 
         return self.db.pool.do(thd)
 
@@ -166,6 +167,7 @@ class SchedulersConnectorComponent(base.DBConnectorComponent):
         sch = yield self.getSchedulers(_schedulerid=schedulerid)
         if sch:
             return sch[0]
+        return None
 
     # returns a Deferred that returns a value
     def getSchedulers(self, active=None, masterid=None, _schedulerid=None):

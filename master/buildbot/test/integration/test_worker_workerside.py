@@ -17,8 +17,6 @@ import shutil
 import tempfile
 import time
 
-import mock
-
 from twisted.cred.error import UnauthorizedLogin
 from twisted.internet import defer
 from twisted.internet import reactor
@@ -32,7 +30,6 @@ from buildbot import worker
 from buildbot.process import botmaster
 from buildbot.process import builder
 from buildbot.process import factory
-from buildbot.status import master
 from buildbot.test.fake import fakemaster
 from buildbot.test.util.misc import TestReactorMixin
 from buildbot.worker import manager as workermanager
@@ -47,10 +44,6 @@ DEFAULT_PORT = os.environ.get("BUILDBOT_TEST_DEFAULT_PORT", "0")
 
 class FakeBuilder(builder.Builder):
 
-    def __init__(self, name):
-        super().__init__(name)
-        self.builder_status = mock.Mock()
-
     def attached(self, worker, commands):
         return defer.succeed(None)
 
@@ -62,21 +55,6 @@ class FakeBuilder(builder.Builder):
 
     def maybeStartBuild(self):
         return defer.succeed(None)
-
-
-class MasterSideWorker(worker.Worker):
-
-    detach_d = None
-
-    def attached(self, conn):
-        self.detach_d = defer.Deferred()
-        return super().attached(conn)
-
-    @defer.inlineCallbacks
-    def detached(self):
-        yield super().detached()
-        self.detach_d, d = None, self.detach_d
-        d.callback(None)
 
 
 class TestingWorker(buildbot_worker.bot.Worker):
@@ -93,7 +71,7 @@ class TestingWorker(buildbot_worker.bot.Worker):
     """
 
     def __init__(self, *args, **kwargs):
-        super(TestingWorker, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.tests_disconnected = defer.Deferred()
         self.tests_connected = defer.Deferred()
@@ -127,7 +105,7 @@ class TestWorkerConnection(unittest.TestCase, TestReactorMixin):
     @ivar master: fake build master
     @ivar pbmanager: L{PBManager} instance
     @ivar botmaster: L{BotMaster} instance
-    @ivar buildworker: L{MasterSideWorker} instance
+    @ivar buildworker: L{worker.Worker} instance
     @ivar port: actual TCP port of the master PB service (fixed after call to
                 ``addMasterSideWorker``)
     """
@@ -140,20 +118,18 @@ class TestWorkerConnection(unittest.TestCase, TestReactorMixin):
         # set the worker port to a loopback address with unspecified
         # port
         self.pbmanager = self.master.pbmanager = pbmanager.PBManager()
-        self.pbmanager.setServiceParent(self.master)
+        yield self.pbmanager.setServiceParent(self.master)
 
         # remove the fakeServiceParent from fake service hierarchy, and replace
         # by a real one
         yield self.master.workers.disownServiceParent()
         self.workers = self.master.workers = workermanager.WorkerManager(
             self.master)
-        self.workers.setServiceParent(self.master)
+        yield self.workers.setServiceParent(self.master)
 
         self.botmaster = botmaster.BotMaster()
-        self.botmaster.setServiceParent(self.master)
+        yield self.botmaster.setServiceParent(self.master)
 
-        self.master.status = master.Status()
-        self.master.status.setServiceParent(self.master)
         self.master.botmaster = self.botmaster
         self.master.data.updates.workerConfigured = lambda *a, **k: None
         yield self.master.startService()
@@ -161,7 +137,6 @@ class TestWorkerConnection(unittest.TestCase, TestReactorMixin):
         self.buildworker = None
         self.port = None
         self.workerworker = None
-        self._detach_deferreds = []
 
         # patch in our FakeBuilder for the regular Builder class
         self.patch(botmaster, 'Builder', FakeBuilder)
@@ -170,21 +145,18 @@ class TestWorkerConnection(unittest.TestCase, TestReactorMixin):
 
         self.tmpdirs = set()
 
+    @defer.inlineCallbacks
     def tearDown(self):
         for tmp in self.tmpdirs:
             if os.path.exists(tmp):
                 shutil.rmtree(tmp)
-        deferreds = self._detach_deferreds + [
-            self.pbmanager.stopService(),
-            self.botmaster.stopService(),
-            self.workers.stopService(),
-        ]
+        yield self.pbmanager.stopService()
+        yield self.botmaster.stopService()
+        yield self.workers.stopService()
 
         # if the worker is still attached, wait for it to detach, too
-        if self.buildworker and self.buildworker.detach_d:
-            deferreds.append(self.buildworker.detach_d)
-
-        return defer.gatherResults(deferreds)
+        if self.buildworker:
+            yield self.buildworker.waitForCompleteShutdown()
 
     @defer.inlineCallbacks
     def addMasterSideWorker(self,
@@ -198,7 +170,7 @@ class TestWorkerConnection(unittest.TestCase, TestReactorMixin):
 
         @param **kwargs: arguments to pass to the L{Worker} constructor.
         """
-        self.buildworker = MasterSideWorker(name, password, **kwargs)
+        self.buildworker = worker.Worker(name, password, **kwargs)
 
         # reconfig the master to get it set up
         new_config = self.master.config

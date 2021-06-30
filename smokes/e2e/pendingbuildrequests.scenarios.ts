@@ -3,20 +3,18 @@
 
 import { HomePage } from './pages/home';
 import { PendingBuildrequestsPage } from './pages/pendingbuildrequests';
-import { ForcePage } from './pages/force';
 import { BuilderPage } from './pages/builder';
 import { browser, by, element, ExpectedConditions as EC } from 'protractor';
+import { bbrowser } from './utils';
 
 describe('pending build requests', function() {
-    let force = null;
     let builder = null;
     let pendingBuildrequests = null;
 
     beforeEach(async () => {
         builder = new BuilderPage('slowruntests', 'force');
-        force =  new ForcePage();
         pendingBuildrequests = new PendingBuildrequestsPage();
-        await builder.goDefault();
+        await builder.goBuildersList();
     });
 
     afterEach(async () => {
@@ -25,7 +23,7 @@ describe('pending build requests', function() {
     });
 
     it('shows', async () => {
-        await builder.goForce();
+        let force = await builder.goForce();
         await force.clickStartButton();
         await builder.goForce();
         await force.clickStartButton();
@@ -38,9 +36,8 @@ describe('pending build requests', function() {
             let count = await pendingBuildrequests.getAllBuildrequestRows().count();
             return count > 0;
         };
-        await browser.wait(isBulidrequestsVisible,
-                           5000,
-                           "did not find buildrequests");
+        await bbrowser.wait(isBulidrequestsVisible,
+                            "did not find buildrequests");
 
         const br = pendingBuildrequests.getAllBuildrequestRows().first();
         expect(await br.element(By.css('td:nth-child(2) a')).getText()).toMatch('slowruntests');
@@ -49,9 +46,8 @@ describe('pending build requests', function() {
         await builder.go();
         await force.clickCancelWholeQueue();
 
-        await browser.wait(EC.alertIsPresent(),
-                           5000,
-                           "did not find confirmation alert");
+        await bbrowser.wait(EC.alertIsPresent(),
+                            "did not find confirmation alert");
         await browser.switchTo().alert().accept();
     });
 });

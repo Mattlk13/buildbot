@@ -26,16 +26,11 @@ from twisted.python import log
 from twisted.web.error import Error
 
 from buildbot.data import exceptions
-from buildbot.data import resultspec
 from buildbot.util import bytes2unicode
 from buildbot.util import toJson
 from buildbot.util import unicode2bytes
 from buildbot.www import resource
 from buildbot.www.authz import Forbidden
-
-
-class BadRequest(Exception):
-    pass
 
 
 class BadJsonRpc2(Exception):
@@ -86,7 +81,7 @@ class RestRootResource(resource.Resource):
     def render(self, request):
         request.setHeader(b"content-type", JSON_ENCODED)
         min_vers = self.master.config.www.get('rest_minimum_version', 0)
-        api_versions = dict(('v%d' % v, '%sapi/v%d' % (self.base_url, v))
+        api_versions = dict(('v{}'.format(v), '{}api/v{}'.format(self.base_url, v))
                             for v in self.version_classes
                             if v > min_vers)
         data = json.dumps(dict(api_versions=api_versions))
@@ -143,7 +138,7 @@ class V2RootResource(resource.Resource):
             writeError(msg or b"invalid control action", errcode=501,
                        jsonrpccode=JSONRPC_CODES["method_not_found"])
             return
-        except BadRequest as e:
+        except exceptions.InvalidQueryParameter as e:
             msg = unicode2bytes(e.args[0])
             writeError(msg or b"invalid request", errcode=400,
                        jsonrpccode=JSONRPC_CODES["method_not_found"])
@@ -179,8 +174,8 @@ class V2RootResource(resource.Resource):
         try:
             data = json.loads(bytes2unicode(request.content.read()))
         except Exception as e:
-            raise BadJsonRpc2("JSON parse error: %s" % (str(e),),
-                              JSONRPC_CODES["parse_error"])
+            raise BadJsonRpc2("JSON parse error: {}".format(
+                str(e)), JSONRPC_CODES["parse_error"]) from e
 
         if isinstance(data, list):
             raise BadJsonRpc2("JSONRPC batch requests are not supported",
@@ -191,10 +186,9 @@ class V2RootResource(resource.Resource):
 
         def check(name, types, typename):
             if name not in data:
-                raise BadJsonRpc2("missing key '%s'" % (name,),
-                                  JSONRPC_CODES["invalid_request"])
+                raise BadJsonRpc2("missing key '{}'".format(name), JSONRPC_CODES["invalid_request"])
             if not isinstance(data[name], types):
-                raise BadJsonRpc2("'%s' must be %s" % (name, typename),
+                raise BadJsonRpc2("'{}' must be {}".format(name, typename),
                                   JSONRPC_CODES["invalid_request"])
         check("jsonrpc", (str,), "a string")
         check("method", (str,), "a string")
@@ -215,7 +209,7 @@ class V2RootResource(resource.Resource):
             if isinstance(msg, bytes):
                 msg = bytes2unicode(msg)
             if self.debug:
-                log.msg("JSONRPC error: %s" % (msg,))
+                log.msg("JSONRPC error: {}".format(msg))
             request.setResponseCode(errcode)
             request.setHeader(b'content-type', JSON_ENCODED)
             if "error" not in jsonRpcReply:  # already filled in by caller
@@ -232,7 +226,10 @@ class V2RootResource(resource.Resource):
             if 'anonymous' in userinfos and userinfos['anonymous']:
                 owner = "anonymous"
             else:
-                owner = userinfos['email']
+                for field in ('email', 'username', 'full_name'):
+                    owner = userinfos.get(field, None)
+                    if owner:
+                        break
             params['owner'] = owner
 
             result = yield ep.control(method, params, kwargs)
@@ -249,99 +246,10 @@ class V2RootResource(resource.Resource):
                 data = unicode2bytes(data)
                 request.write(data)
 
-    # JSONAPI support
     def decodeResultSpec(self, request, endpoint):
-        reqArgs = request.args
-
-        def checkFields(fields, negOk=False):
-            for field in fields:
-                k = bytes2unicode(field)
-                if k[0] == '-' and negOk:
-                    k = k[1:]
-                if k not in entityType.fieldNames:
-                    raise BadRequest("no such field '{}'".format(k))
-
+        args = request.args
         entityType = endpoint.rtype.entityType
-        limit = offset = order = fields = None
-        filters, properties = [], []
-        for arg in reqArgs:
-            argStr = bytes2unicode(arg)
-            if arg == b'order':
-                order = tuple([bytes2unicode(o) for o in reqArgs[arg]])
-                checkFields(order, True)
-            elif arg == b'field':
-                fields = reqArgs[arg]
-                checkFields(fields, False)
-            elif arg == b'limit':
-                try:
-                    limit = int(reqArgs[arg][0])
-                except Exception:
-                    raise BadRequest('invalid limit')
-            elif arg == b'offset':
-                try:
-                    offset = int(reqArgs[arg][0])
-                except Exception:
-                    raise BadRequest('invalid offset')
-            elif arg == b'property':
-                try:
-                    props = []
-                    for v in reqArgs[arg]:
-                        if not isinstance(v, (bytes, str)):
-                            raise TypeError(
-                                "Invalid type {} for {}".format(type(v), v))
-                        props.append(bytes2unicode(v))
-                except Exception:
-                    raise BadRequest(
-                        'invalid property value for {}'.format(arg))
-                properties.append(resultspec.Property(arg, 'eq', props))
-            elif argStr in entityType.fieldNames:
-                field = entityType.fields[argStr]
-                try:
-                    values = [field.valueFromString(v) for v in reqArgs[arg]]
-                except Exception:
-                    raise BadRequest(
-                        'invalid filter value for {}'.format(argStr))
-
-                filters.append(resultspec.Filter(argStr, 'eq', values))
-            elif '__' in argStr:
-                field, op = argStr.rsplit('__', 1)
-                args = reqArgs[arg]
-                operators = (resultspec.Filter.singular_operators
-                             if len(args) == 1
-                             else resultspec.Filter.plural_operators)
-                if op in operators and field in entityType.fieldNames:
-                    fieldType = entityType.fields[field]
-                    try:
-                        values = [fieldType.valueFromString(v)
-                                  for v in reqArgs[arg]]
-                    except Exception:
-                        raise BadRequest(
-                            'invalid filter value for {}'.format(argStr))
-                    filters.append(resultspec.Filter(field, op, values))
-            else:
-                raise BadRequest(
-                    "unrecognized query parameter '{}'".format(argStr))
-
-        # if ordering or filtering is on a field that's not in fields, bail out
-        if fields:
-            fields = [bytes2unicode(f) for f in fields]
-            fieldsSet = set(fields)
-            if order and {o.lstrip('-') for o in order} - fieldsSet:
-                raise BadRequest("cannot order on un-selected fields")
-            for filter in filters:
-                if filter.field not in fieldsSet:
-                    raise BadRequest("cannot filter on un-selected fields")
-
-        # build the result spec
-        rspec = resultspec.ResultSpec(fields=fields, limit=limit, offset=offset,
-                                      order=order, filters=filters, properties=properties)
-
-        # for singular endpoints, only allow fields
-        if not endpoint.isCollection:
-            if rspec.filters:
-                raise BadRequest("this is not a collection")
-
-        return rspec
+        return self.master.data.resultspec_from_jsonapi(args, entityType, endpoint.isCollection)
 
     def encodeRaw(self, data, request):
         request.setHeader(b"content-type",
@@ -355,7 +263,7 @@ class V2RootResource(resource.Resource):
     def renderRest(self, request):
         def writeError(msg, errcode=404, jsonrpccode=None):
             if self.debug:
-                log.msg("REST error: %s" % (msg,))
+                log.msg("REST error: {}".format(msg))
             request.setResponseCode(errcode)
             request.setHeader(b'content-type', b'text/plain; charset=utf-8')
             msg = bytes2unicode(msg)
@@ -460,7 +368,7 @@ class V2RootResource(resource.Resource):
         def writeError(msg, errcode=400):
             msg = bytes2unicode(msg)
             if self.debug:
-                log.msg("HTTP error: %s" % (msg,))
+                log.msg("HTTP error: {}".format(msg))
             request.setResponseCode(errcode)
             request.setHeader(b'content-type', b'text/plain; charset=utf-8')
             if request.method == b'POST':

@@ -26,6 +26,7 @@ from twisted.trial import unittest
 from buildbot.db import enginestrategy
 from buildbot.db import model
 from buildbot.db import pool
+from buildbot.db.connector import DBConnector
 from buildbot.util.sautils import sa_version
 from buildbot.util.sautils import withoutSqliteForeignKeys
 
@@ -35,8 +36,7 @@ def skip_for_dialect(dialect):
     def dec(fn):
         def wrap(self, *args, **kwargs):
             if self.db_engine.dialect.name == dialect:
-                raise unittest.SkipTest(
-                    "Not supported on dialect '%s'" % dialect)
+                raise unittest.SkipTest("Not supported on dialect '{}'".format(dialect))
             return fn(self, *args, **kwargs)
         return wrap
     return dec
@@ -57,17 +57,21 @@ class RealDatabaseMixin:
     @ivar db_url: the DB URL used to run these tests
 
     @ivar db_engine: the engine created for the test database
+
+    Note that this class uses the production database model.  A
+    re-implementation would be virtually identical and just require extra
+    work to keep synchronized.
+
+    Similarly, this class uses the production DB thread pool.  This achieves
+    a few things:
+     - affords more thorough tests for the pool
+     - avoids repetitive implementation
+     - cooperates better at runtime with thread-sensitive DBAPI's
+
+    Finally, it duplicates initialization performed in db.connector.DBConnector.setup().
+    Never call that method in tests that use RealDatabaseMixin, use
+    RealDatabaseWithConnectorMixin.
     """
-
-    # Note that this class uses the production database model.  A
-    # re-implementation would be virtually identical and just require extra
-    # work to keep synchronized.
-
-    # Similarly, this class uses the production DB thread pool.  This achieves
-    # a few things:
-    #  - affords more thorough tests for the pool
-    #  - avoids repetitive implementation
-    #  - cooperates better at runtime with thread-sensitive DBAPI's
 
     def __thd_clean_database(self, conn):
         # In general it's nearly impossible to do "bullet proof" database
@@ -142,8 +146,8 @@ class RealDatabaseMixin:
 
             # Drop all reflected tables and indices. May fail, e.g. if
             # SQLAlchemy wouldn't be able to break circular references.
-            # Sqlalchemy fk support with sqlite is not yet perfect, so we must deactivate fk during that
-            # operation, even though we made our possible to use use_alter
+            # Sqlalchemy fk support with sqlite is not yet perfect, so we must deactivate fk during
+            # that operation, even though we made our possible to use use_alter
             with withoutSqliteForeignKeys(conn.engine, conn):
                 meta.drop_all()
 
@@ -205,14 +209,16 @@ class RealDatabaseMixin:
 
         self.db_pool = pool.DBThreadPool(self.db_engine, reactor=reactor)
 
-        log.msg("cleaning database %s" % self.db_url)
+        log.msg("cleaning database {}".format(self.db_url))
         yield self.db_pool.do(self.__thd_clean_database)
         yield self.db_pool.do(self.__thd_create_tables, table_names)
+        return None
 
     @defer.inlineCallbacks
     def tearDownRealDatabase(self):
         if self.__want_pool:
             yield self.db_pool.do(self.__thd_clean_database)
+            yield self.db_pool.shutdown()
 
     @defer.inlineCallbacks
     def insertTestData(self, rows):
@@ -236,9 +242,25 @@ class RealDatabaseMixin:
                     try:
                         tbl.insert(bind=conn).execute(row.values)
                     except Exception:
-                        log.msg("while inserting %s - %s" % (row, row.values))
+                        log.msg("while inserting {} - {}".format(row, row.values))
                         raise
         yield self.db_pool.do(thd)
+
+
+class RealDatabaseWithConnectorMixin(RealDatabaseMixin):
+    # Same as RealDatabaseMixin, except that a real DBConnector is also setup in a correct way.
+
+    @defer.inlineCallbacks
+    def setUpRealDatabaseWithConnector(self, master, table_names=None, basedir='basedir',
+                                       want_pool=True, sqlite_memory=True):
+        yield self.setUpRealDatabase(table_names, basedir, want_pool, sqlite_memory)
+        master.config.db['db_url'] = self.db_url
+        master.db = DBConnector(self.basedir)
+        yield master.db.setServiceParent(master)
+        master.db.pool = self.db_pool
+
+    def tearDownRealDatabaseWithConnector(self):
+        return self.tearDownRealDatabase()
 
 
 class TestCase(unittest.TestCase):

@@ -22,10 +22,15 @@ from buildbot import util
 from buildbot.util import bytes2unicode
 
 
+def capitalize(word):
+    return ''.join(x.capitalize() or '_' for x in word.split('_'))
+
+
 class Type:
 
     name = None
     doc = None
+    graphQLType = "unknown"
 
     @property
     def ramlname(self):
@@ -54,6 +59,18 @@ class Type:
         if self.doc is not None:
             r["doc"] = self.doc
         return r
+
+    def toGraphQL(self):
+        return self.graphQLType
+
+    def toGraphQLTypeName(self):
+        return self.graphQLType
+
+    def graphQLDependentTypes(self):
+        return []
+
+    def getGraphQLInputType(self):
+        return self.toGraphQLTypeName()
 
 
 class NoneOk(Type):
@@ -87,11 +104,24 @@ class NoneOk(Type):
     def toRaml(self):
         return self.nestedType.toRaml()
 
+    def toGraphQL(self):
+        # remove trailing !
+        if isinstance(self.nestedType, Entity):
+            return capitalize(self.nestedType.name)
+        return self.nestedType.toGraphQL()[:-1]
+
+    def graphQLDependentTypes(self):
+        return [self.nestedType]
+
+    def getGraphQLInputType(self):
+        return self.nestedType.getGraphQLInputType()
+
 
 class Instance(Type):
 
     types = ()
     ramlType = "unknown"
+    graphQLType = "unknown"
 
     @property
     def ramlname(self):
@@ -99,11 +129,13 @@ class Instance(Type):
 
     def validate(self, name, object):
         if not isinstance(object, self.types):
-            yield "%s (%r) is not a %s" % (
-                name, object, self.name or repr(self.types))
+            yield "{} ({}) is not a {}".format(name, repr(object), self.name or repr(self.types))
 
     def toRaml(self):
         return self.ramlType
+
+    def toGraphQL(self):
+        return self.graphQLType + "!"
 
 
 class Integer(Instance):
@@ -111,15 +143,33 @@ class Integer(Instance):
     name = "integer"
     types = (int,)
     ramlType = "integer"
+    graphQLType = "Int"
 
     def valueFromString(self, arg):
         return int(arg)
 
 
 class DateTime(Instance):
+
     name = "datetime"
-    types = (datetime.datetime)
+    types = (datetime.datetime,)
     ramlType = "date"
+    graphQLType = "Date"  # custom
+
+    def valueFromString(self, arg):
+        return int(arg)
+
+    def validate(self, name, object):
+        if isinstance(object, datetime.datetime):
+            return
+        if isinstance(object, int):
+            try:
+                datetime.datetime.fromtimestamp(object)
+            except (OverflowError, OSError):
+                pass
+            else:
+                return
+        yield "{} ({}) is not a valid timestamp".format(name, object)
 
 
 class String(Instance):
@@ -127,6 +177,7 @@ class String(Instance):
     name = "string"
     types = (str,)
     ramlType = "string"
+    graphQLType = "String"
 
     def valueFromString(self, arg):
         val = util.bytes2unicode(arg)
@@ -138,6 +189,7 @@ class Binary(Instance):
     name = "binary"
     types = (bytes,)
     ramlType = "string"
+    graphQLType = "Binary"  # custom
 
     def valueFromString(self, arg):
         return arg
@@ -148,6 +200,7 @@ class Boolean(Instance):
     name = "boolean"
     types = (bool,)
     ramlType = "boolean"
+    graphQLType = "Boolean"  # custom
 
     def valueFromString(self, arg):
         return util.string2boolean(arg)
@@ -158,6 +211,7 @@ class Identifier(Type):
     name = "identifier"
     identRe = re.compile('^[a-zA-Z_-][a-zA-Z0-9._-]*$')
     ramlType = "string"
+    graphQLType = "String"
 
     def __init__(self, len=None, **kwargs):
         super().__init__(**kwargs)
@@ -171,14 +225,13 @@ class Identifier(Type):
 
     def validate(self, name, object):
         if not isinstance(object, str):
-            yield "%s - %r - is not a unicode string" % (name, object)
+            yield "{} - {} - is not a unicode string".format(name, repr(object))
         elif not self.identRe.match(object):
-            yield "%s - %r - is not an identifier" % (name, object)
+            yield "{} - {} - is not an identifier".format(name, repr(object))
         elif not object:
-            yield "%s - identifiers cannot be an empty string" % (name,)
+            yield "{} - identifiers cannot be an empty string".format(name)
         elif len(object) > self.len:
-            yield "%s - %r - is longer than %d characters" % (name, object,
-                                                              self.len)
+            yield "{} - {} - is longer than {} characters".format(name, repr(object), self.len)
 
     def toRaml(self):
         return {'type': self.ramlType,
@@ -200,11 +253,11 @@ class List(Type):
 
     def validate(self, name, object):
         if not isinstance(object, list):  # we want a list, and NOT a subclass
-            yield "%s (%r) is not a %s" % (name, object, self.name)
+            yield "{} ({}) is not a {}".format(name, repr(object), self.name)
             return
 
         for idx, elt in enumerate(object):
-            for msg in self.of.validate("%s[%d]" % (name, idx), elt):
+            for msg in self.of.validate("{}[{}]".format(name, idx), elt):
                 yield msg
 
     def valueFromString(self, arg):
@@ -219,8 +272,20 @@ class List(Type):
     def toRaml(self):
         return {'type': 'array', 'items': self.of.name}
 
+    def toGraphQL(self):
+        return f"[{self.of.toGraphQLTypeName()}]!"
 
-def maybeNoneOrList(k, v):
+    def toGraphQLTypeName(self):
+        return f"[{self.of.toGraphQLTypeName()}]"
+
+    def graphQLDependentTypes(self):
+        return [self.of]
+
+    def getGraphQLInputType(self):
+        return self.of.getGraphQLInputType()
+
+
+def ramlMaybeNoneOrList(k, v):
     if isinstance(v, NoneOk):
         return k + "?"
     if isinstance(v, List):
@@ -234,21 +299,21 @@ class SourcedProperties(Type):
 
     def validate(self, name, object):
         if not isinstance(object, dict):  # we want a dict, and NOT a subclass
-            yield "%s is not sourced properties (not a dict)" % (name,)
+            yield "{} is not sourced properties (not a dict)".format(name)
             return
         for k, v in object.items():
             if not isinstance(k, str):
-                yield "%s property name %r is not unicode" % (name, k)
+                yield "{} property name {} is not unicode".format(name, repr(k))
             if not isinstance(v, tuple) or len(v) != 2:
-                yield "%s property value for '%s' is not a 2-tuple" % (name, k)
+                yield "{} property value for '{}' is not a 2-tuple".format(name, k)
                 return
             propval, propsrc = v
             if not isinstance(propsrc, str):
-                yield "%s[%s] source %r is not unicode" % (name, k, propsrc)
+                yield "{}[{}] source {} is not unicode".format(name, k, repr(propsrc))
             try:
                 json.loads(bytes2unicode(propval))
             except ValueError:
-                yield "%s[%r] value is not JSON-able" % (name, k)
+                yield "{}[{}] value is not JSON-able".format(name, repr(k))
 
     def toRaml(self):
         return {'type': "object",
@@ -260,69 +325,32 @@ class SourcedProperties(Type):
                         }
                         }}}
 
+    def toGraphQL(self):
+        return "[Property]!"
 
-class Dict(Type):
-    name = "dict"
+    def graphQLDependentTypes(self):
+        return [PropertyEntityType("property")]
 
-    @property
-    def ramlname(self):
-        return self.toRaml()
-
-    def __init__(self, **contents):
-        self.contents = contents
-        self.keys = set(contents)
-
-    def validate(self, name, object):
-        if not isinstance(object, dict):
-            yield "%s (%r) is not a dictionary (got type %s)" \
-                % (name, object, type(object))
-            return
-
-        gotNames = set(object.keys())
-
-        unexpected = gotNames - self.keys
-        if unexpected:
-            yield "%s has unexpected keys %s" % (name,
-                                                 ", ".join([repr(n) for n in unexpected]))
-
-        missing = self.keys - gotNames
-        if missing:
-            yield "%s is missing keys %s" % (name,
-                                             ", ".join([repr(n) for n in missing]))
-
-        for k in gotNames & self.keys:
-            f = self.contents[k]
-            for msg in f.validate("%s[%r]" % (name, k), object[k]):
-                yield msg
-
-    def getSpec(self):
-        return dict(type=self.name,
-                    fields=[dict(name=k,
-                                 type=v.name,
-                                 type_spec=v.getSpec())
-                            for k, v in self.contents.items()
-                            ])
-
-    def toRaml(self):
-        return {'type': "object",
-                'properties': {maybeNoneOrList(k, v): v.ramlname for k, v in self.contents.items()}}
+    def getGraphQLInputType(self):
+        return None
 
 
 class JsonObject(Type):
     name = "jsonobject"
     ramlname = 'object'
+    graphQLType = "JSON"
 
     def validate(self, name, object):
         if not isinstance(object, dict):
-            yield "%s (%r) is not a dictionary (got type %s)" \
-                % (name, object, type(object))
+            yield "{} ({}) is not a dictionary (got type {})".format(name, repr(object),
+                                                                     type(object))
             return
 
         # make sure JSON can represent it
         try:
             json.dumps(object)
         except Exception as e:
-            yield "%s is not JSON-able: %s" % (name, e)
+            yield "{} is not JSON-able: {}".format(name, e)
             return
 
     def toRaml(self):
@@ -352,25 +380,23 @@ class Entity(Type):
     def validate(self, name, object):
         # this uses isinstance, allowing dict subclasses as used by the DB API
         if not isinstance(object, dict):
-            yield "%s (%r) is not a dictionary (got type %s)" \
-                % (name, object, type(object))
+            yield "{} ({}) is not a dictionary (got type {})".format(name, repr(object),
+                                                                     type(object))
             return
 
         gotNames = set(object.keys())
 
         unexpected = gotNames - self.fieldNames
         if unexpected:
-            yield "%s has unexpected keys %s" % (name,
-                                                 ", ".join([repr(n) for n in unexpected]))
+            yield "{} has unexpected keys {}".format(name, ", ".join([repr(n) for n in unexpected]))
 
         missing = self.fieldNames - gotNames
         if missing:
-            yield "%s is missing keys %s" % (name,
-                                             ", ".join([repr(n) for n in missing]))
+            yield "{} is missing keys {}".format(name, ", ".join([repr(n) for n in missing]))
 
         for k in gotNames & self.fieldNames:
             f = self.fields[k]
-            for msg in f.validate("%s[%r]" % (name, k), object[k]):
+            for msg in f.validate("{}[{}]".format(name, repr(k)), object[k]):
                 yield msg
 
     def getSpec(self):
@@ -384,5 +410,29 @@ class Entity(Type):
     def toRaml(self):
         return {'type': "object",
                 'properties': {
-                    maybeNoneOrList(k, v): {'type': v.ramlname, 'description': ''}
+                    ramlMaybeNoneOrList(k, v): {'type': v.ramlname, 'description': ''}
                     for k, v in self.fields.items()}}
+
+    def toGraphQL(self):
+        return dict(type=capitalize(self.name),
+                    fields=[dict(name=k,
+                                 type=v.toGraphQL())
+                            for k, v in self.fields.items()
+                            ])
+
+    def toGraphQLTypeName(self):
+        return capitalize(self.name)
+
+    def graphQLDependentTypes(self):
+        return self.fields.values()
+
+    def getGraphQLInputType(self):
+        # for now, complex types are not query able
+        # in the future, we may want to declare (and implement) graphql input types
+        return None
+
+
+class PropertyEntityType(Entity):
+    name = String()
+    source = String()
+    value = JsonObject()

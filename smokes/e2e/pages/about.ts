@@ -3,6 +3,7 @@
 
 import { BasePage } from "./base";
 import { browser, by, element, ExpectedConditions as EC } from 'protractor';
+import { bbrowser } from '../utils';
 
 export class AboutPage extends BasePage {
     constructor(builder) {
@@ -11,15 +12,8 @@ export class AboutPage extends BasePage {
     }
 
     async goAbout() {
-        await browser.get('#/about');
-        await browser.wait(EC.urlContains('#/about'),
-                           10000,
-                           "URL does not contain #/about");
-    }
-
-    async checkAboutPage() {
-        const url = await browser.getCurrentUrl();
-        expect(url).toContain('#/about');
+        await bbrowser.get('#/about');
+        await bbrowser.wait(EC.urlContains('#/about'), "URL does not contain #/about");
     }
 
     async checkBuildbotTitle() {
@@ -31,7 +25,7 @@ export class AboutPage extends BasePage {
 
     async checkConfigTitle() {
         const configurationTitle = element.all(By.css('h2')).get(1);
-        const title:string = await configurationTitle.getText()
+        const title:string = await configurationTitle.getText();
         expect(title).toContain('Configuration');
     }
 

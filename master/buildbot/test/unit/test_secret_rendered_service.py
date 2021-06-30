@@ -20,14 +20,12 @@ class FakeServiceUsingSecrets(BuildbotService):
         self.secret = secret
 
     def returnRenderedSecrets(self, secretKey):
-        try:
-            return getattr(self, secretKey)
-        except Exception:
-            raise Exception
+        return getattr(self, secretKey)
 
 
 class TestRenderSecrets(TestReactorMixin, unittest.TestCase):
 
+    @defer.inlineCallbacks
     def setUp(self):
         self.setUpTestReactor()
         self.master = fakemaster.make_master(self)
@@ -35,10 +33,10 @@ class TestRenderSecrets(TestReactorMixin, unittest.TestCase):
                                                        "other": "value"})
         self.secretsrv = SecretManager()
         self.secretsrv.services = [fakeStorageService]
-        self.secretsrv.setServiceParent(self.master)
+        yield self.secretsrv.setServiceParent(self.master)
         self.srvtest = FakeServiceUsingSecrets()
-        self.srvtest.setServiceParent(self.master)
-        self.successResultOf(self.master.startService())
+        yield self.srvtest.setServiceParent(self.master)
+        yield self.master.startService()
 
     @defer.inlineCallbacks
     def tearDown(self):

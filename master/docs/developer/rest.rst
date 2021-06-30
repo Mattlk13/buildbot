@@ -9,10 +9,13 @@
 REST API
 ========
 
-The REST API is a thin wrapper around the data API's "Getter" and "Control" sections.
+The REST API is a public interface which can be used by external code to control Buildbot.
+Internally, the REST API is a thin wrapper around the data API's "Getter" and "Control" sections.
 It is also designed, in keeping with REST principles, to be discoverable.
 As such, the details of the paths and resources are not documented here.
 Begin at the root URL, and see the :ref:`Data_API` documentation for more information.
+
+The precise specifications in RAML format are described in :ref:`REST_API_specs` documentation.
 
 .. contents:: :local:
 
@@ -23,10 +26,10 @@ The API described here is version 2.
 The ad-hoc API from Buildbot-0.8.x, version 1, is no longer supported [#apiv1]_.
 
 
-The policy for incrementing the version is when there is incompatible change added.
+The policy for incrementing the version is when there is an incompatible change added.
 Removing a field or endpoint is considered incompatible change.
-Adding a field or endpoint is not considered incompatible, and thus will only be described as a change in release note.
-The policy is that we will avoid as much as possible incrementing version.
+Adding a field or endpoint is not considered incompatible, and thus will only be described as a change in release notes.
+The policy is that we will avoid as much as possible incrementing the version.
 
 .. [#apiv1] The JSON API defined by ``status_json.py`` in Buildbot-0.8.x is considered version 1, although its root path was ``json``, not ``api/v1``.
 
@@ -34,7 +37,7 @@ Getting
 ~~~~~~~
 
 To get data, issue a GET request to the appropriate path.
-For example, with a base URL of ``http://build.example.org/buildbot``, the list of masters for builder 9 is available at ``http://build.example.org/buildbot/api/v2/builder/9/master``.
+For example, with a base URL of ``http://build.example.org/buildbot``, the list of masters for builder 9 is available at ``http://build.example.org/buildbot/api/v2/builders/9/masters``.
 
 .. bb:rtype:: collection
 
@@ -100,7 +103,7 @@ For example, ``http://build.example.org/api/v2/scheduler?name=smoketest`` select
 Filters can use any of the operators listed below, with query parameters of the form ``{field}__{operator}={value}``.
 
 ``eq``
-    equality, or with the same parameter appearing multiple times, equality with one of the given values (so `foo__eq=x&foo__eq=y` would match resources where foo is `x` or `y`)
+    equality, with the same parameter appearing one or multiple times, is equality with one of the given values (so `foo__eq=x&foo__eq=y` would match resources where foo is `x` or `y`)
 ``ne``
     inequality, or set exclusion
 ``lt``
@@ -127,22 +130,22 @@ Sorting
 
 Collection responses may be ordered with the ``order`` query parameter.
 This parameter takes a field name to sort on, optionally prefixed with ``-`` to reverse the sort.
-The parameter can appear multiple times, and will be sorted lexically with the fields arranged in the given order.
+The parameter can appear multiple times, and will be sorted lexicographically with the fields arranged in the given order.
 For example:
 
-* ``http://build.example.org/api/v2/buildrequest?order=builderid&order=buildrequestid``
+* ``http://build.example.org/api/v2/buildrequests?order=builderid&order=buildrequestid``
 
 Pagination
 ..........
 
 Collection responses may be paginated with the ``offset`` and ``limit`` query parameters.
-The offset is the 0-based index of the first result to included, after filtering and sorting.
+The offset is the 0-based index of the first result to include, after filtering and sorting.
 The limit is the maximum number of results to return.
 Some resource types may impose a maximum on the limit parameter; be sure to check the resulting links to determine whether further data is available.
 For example:
 
-* ``http://build.example.org/api/v2/buildrequest?order=builderid&limit=10``
-* ``http://build.example.org/api/v2/buildrequest?order=builderid&offset=20&limit=10``
+* ``http://build.example.org/api/v2/buildrequests?order=builderid&limit=10``
+* ``http://build.example.org/api/v2/buildrequests?order=builderid&offset=20&limit=10``
 
 Controlling
 ~~~~~~~~~~~
@@ -163,127 +166,22 @@ A simple example:
 .. code-block:: none
 
     POST http://build.example.org/api/v2/scheduler/4
-    --> {"jsonrpc": "2.0", "method": "force", "params": {"revision": "abcd", "branch": "dev"}, "id": 843}
+    --> {"jsonrpc": "2.0", "method": "force",
+         "params": {"revision": "abcd", "branch": "dev"},
+         "id": 843}
     <-- {"jsonrpc": "2.0", "result": {"buildsetid": 44}, "id": 843}
 
 Authentication
 ~~~~~~~~~~~~~~
 
-Authentication to the REST API is performed in the same manner as authentication to the main web interface.  Once credentials have been established, a cookie will be set, which must be sent to the buildbot REST API with every request thereafter.  For those buildbot instances using OAuth2 authentication providers, access tokens can be used for automated access.  For example, GitHub's personal access tokens can be used to access the buildbot as a github user without needing to store the username and password of the user.  To use an OAuth2 access token, send a `GET` request to the `/auth/login` with the `token` URL parameter set to the access token that the OAuth2 provider has given you.  A `python` example using `requests` is shown below, where we first authenticate with our OAuth2 access token, and then are able to request otherwise shielded endpoints:
+Authentication to the REST API is performed in the same manner as authentication to the main web interface.
+Once credentials have been established, a cookie will be set, which must be sent to the Buildbot REST API with every request thereafter.
 
 .. code-block:: python
 
     import requests
     s = requests.Session()
-    s.get("https://<buildbot_url>/auth/login", params={"token": OAUTH_TOKEN})
+    s.get("https://<buildbot_url>/auth/login", auth=('user', 'passwd'))
     builders = s.get("https://<buildbot_url>/api/v2/builders").json()
 
-.. _Raml-Spec:
-
-Raml Specs
-~~~~~~~~~~
-
-The Data API is documented in `RAML 1.0 format <https://github.com/raml-org/raml-spec/blob/master/versions/raml-10/raml-10.md>`_.
-RAML describes and documents all our data, rest, and javascript APIs in a format that can be easily manipulated by human and machines.
-
-.. jinja:: data_api
-
-    {% for name, type in raml.types.items()|sort %}
-    ..
-       sphinx wants to have at least same number of underline chars than actual tile
-       but has the title is generated, this is a bit more complicated.
-       So we generate hundred of them
-
-    {{type.get("displayName", name)}}
-    {{"."*100}}
-
-    .. bb:rtype:: {{name}}
-
-        {% if 'properties' in type -%}
-        {% for key, value in type.properties.items() -%}
-        :attr {{value.type}} {{key}}: {{raml.reindent(value.description, 4*2)}}
-        {% endfor %}
-    {% if 'example' in type -%}
-
-    ``example``
-
-        .. code-block:: javascript
-
-            {{raml.format_json(type.example, indent=4*2)}}
-
-    {% endif %}
-    {% if 'examples' in type -%}
-    ``examples``
-
-    {% for example in type.examples -%}
-
-        .. code-block:: javascript
-
-            {{raml.format_json(example, indent=4*2)}}
-
-    {% endfor %}
-    {% endif %}
-
-    {{type.description}}
-    {% endif %}
-    {% if name in raml.endpoints_by_type -%}{# if type has endpoints #}
-    Endpoints
-    ---------
-    {% for ep, config in raml.endpoints_by_type[name].items()|sort -%}
-    .. bb:rpath:: {{ep}}
-
-        {% for key, value in config.uriParameters.items() -%}
-            :pathkey {{value.type}} {{key}}: {{raml.reindent(value.description, 4*2)}}
-        {% endfor %}
-    {{config.description}}
-
-    {% if 'get' in config -%}
-    {% set method_ep = config['get'] -%}
-    ``GET``
-        {% if method_ep['eptype'] -%}
-        ``returns``
-            :bb:rtype:`collection` of :bb:rtype:`{{method_ep['eptype']}}`
-        {% endif %}
-
-    {% endif %}{# if ep has get #}
-
-    {% for method, action in raml.iter_actions(config) -%}
-    .. bb:raction:: {{ep}} (method={{method}})
-
-        :body string method:  must be ``{{ method }}``
-
-        {% for key, value in action['body'].items() -%}
-        :body {{value.type}} {{key}}: {{raml.reindent(value.description, 4*2)}}
-        {% endfor %}
-
-    {% endfor %}{# endpoints #}
-    {% endfor %}{# endpoints #}
-    {% endif %}{# if type has endpoints #}
-    {% endfor %}{# for each types #}
-
-    Raw endpoints
-    .............
-
-    Raw endpoints allow to download content in their raw format (i.e. not within a json glue).
-    The ``content-disposition`` http header is set, so that the browser knows which file to store the content to.
-
-    {% for ep, config in raml.rawendpoints.items()|sort %}
-
-    .. bb:rpath:: {{ep}}
-
-        {% for key, value in config.uriParameters.items() -%}
-            :pathkey {{value.type}} {{key}}: {{raml.reindent(value.description, 4*2)}}
-        {% endfor %}
-
-    {{config['get'].description}}
-
-    {% endfor %}
-
-    Raml spec verbatim
-    ..................
-
-    Sometimes Raml is just clearer than formatted text.
-
-    .. code-block:: yaml
-
-        {{raml.reindent(raml.rawraml, 4*1)}}
+For those Buildbot instances using OAuth2 authentication providers, it is at the moment not possible to access the authenticated API .

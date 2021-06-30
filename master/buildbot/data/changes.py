@@ -40,6 +40,9 @@ class FixerMixin:
             change['sourcestamp'] = yield self.master.data.get(sskey)
             del change['sourcestampid']
         return change
+    fieldMapping = {
+        'changeid': 'changes.changeid',
+    }
 
 
 class ChangeEndpoint(FixerMixin, base.Endpoint):
@@ -55,11 +58,12 @@ class ChangeEndpoint(FixerMixin, base.Endpoint):
         return d
 
 
-class ChangesEndpoint(FixerMixin, base.Endpoint):
+class ChangesEndpoint(FixerMixin, base.BuildNestingMixin, base.Endpoint):
 
     isCollection = True
     pathPatterns = """
         /changes
+        /builders/n:builderid/builds/n:build_number/changes
         /builds/n:buildid/changes
         /sourcestamps/n:ssid/changes
     """
@@ -68,6 +72,8 @@ class ChangesEndpoint(FixerMixin, base.Endpoint):
     @defer.inlineCallbacks
     def get(self, resultSpec, kwargs):
         buildid = kwargs.get('buildid')
+        if 'build_number' in kwargs:
+            buildid = yield self.getBuildid(kwargs)
         ssid = kwargs.get('ssid')
         if buildid is not None:
             changes = yield self.master.db.changes.getChangesForBuild(buildid)
@@ -78,13 +84,9 @@ class ChangesEndpoint(FixerMixin, base.Endpoint):
             else:
                 changes = []
         else:
-            # this special case is useful and implemented by the dbapi
-            # so give it a boost
-            if (resultSpec.order == ('-changeid',) and resultSpec.limit and
-                    resultSpec.offset is None):
-                changes = yield self.master.db.changes.getRecentChanges(resultSpec.limit)
-            else:
-                changes = yield self.master.db.changes.getChanges()
+            if resultSpec is not None:
+                resultSpec.fieldMapping = self.fieldMapping
+                changes = yield self.master.db.changes.getChanges(resultSpec=resultSpec)
         results = []
         for ch in changes:
             results.append((yield self._fixChange(ch)))
@@ -202,7 +204,7 @@ class Change(base.ResourceType):
         self.produceEvent(change, 'new')
 
         # log, being careful to handle funny characters
-        msg = "added change with revision %s to database" % (revision,)
+        msg = "added change with revision {} to database".format(revision)
         log.msg(msg.encode('utf-8', 'replace'))
 
         return changeid

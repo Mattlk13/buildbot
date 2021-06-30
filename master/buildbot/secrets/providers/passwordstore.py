@@ -20,10 +20,10 @@ import os
 from pathlib import Path
 
 from twisted.internet import defer
-from twisted.internet import utils
 
 from buildbot import config
 from buildbot.secrets.providers.base import SecretProviderBase
+from buildbot.util import runprocess
 
 
 class SecretInPass(SecretProviderBase):
@@ -38,7 +38,7 @@ class SecretInPass(SecretProviderBase):
 
     def checkPassDirectoryIsAvailableAndReadable(self, dirname):
         if not os.access(dirname, os.F_OK):
-            config.error("directory %s does not exist" % dirname)
+            config.error("directory {} does not exist".format(dirname))
 
     def checkConfig(self, gpgPassphrase=None, dirname=None):
         self.checkPassIsInPath()
@@ -48,7 +48,7 @@ class SecretInPass(SecretProviderBase):
     def reconfigService(self, gpgPassphrase=None, dirname=None):
         self._env = {**os.environ}
         if gpgPassphrase:
-            self._env["PASSWORD_STORE_GPG_OPTS"] = "--passphrase %s" % gpgPassphrase
+            self._env["PASSWORD_STORE_GPG_OPTS"] = "--passphrase {}".format(gpgPassphrase)
         if dirname:
             self._env["PASSWORD_STORE_DIR"] = dirname
 
@@ -58,11 +58,11 @@ class SecretInPass(SecretProviderBase):
         get the value from pass identified by 'entry'
         """
         try:
-            output = yield utils.getProcessOutput(
-                "pass",
-                args=[entry],
-                env=self._env
-            )
+            rc, output = yield runprocess.run_process(self.master.reactor,
+                                                      ['pass', entry], env=self._env,
+                                                      collect_stderr=False, stderr_is_error=True)
+            if rc != 0:
+                return None
             return output.decode("utf-8", "ignore").splitlines()[0]
         except IOError:
             return None

@@ -25,11 +25,11 @@ from dateutil.parser import parse as dateparse
 from twisted.internet import defer
 from twisted.python import log
 
-from buildbot.changes.github import PullRequestMixin
 from buildbot.process.properties import Properties
 from buildbot.util import bytes2unicode
 from buildbot.util import httpclientservice
 from buildbot.util import unicode2bytes
+from buildbot.util.pullrequest import PullRequestMixin
 from buildbot.www.hooks.base import BaseHookHandler
 
 _HEADER_EVENT = b'X-GitHub-Event'
@@ -41,6 +41,8 @@ DEFAULT_GITHUB_API_URL = 'https://api.github.com'
 
 class GitHubEventHandler(PullRequestMixin):
 
+    property_basename = "github"
+
     def __init__(self, secret, strict,
                  codebase=None,
                  github_property_whitelist=None,
@@ -51,17 +53,17 @@ class GitHubEventHandler(PullRequestMixin):
                  token=None,
                  debug=False,
                  verify=False):
+        if github_property_whitelist is None:
+            github_property_whitelist = []
         self._secret = secret
         self._strict = strict
         self._token = token
         self._codebase = codebase
+        self.external_property_whitelist = github_property_whitelist
         self.pullrequest_ref = pullrequest_ref
-        self.github_property_whitelist = github_property_whitelist
         self.skips = skips
         self.github_api_endpoint = github_api_endpoint
         self.master = master
-        if github_property_whitelist is None:
-            self.github_property_whitelist = []
         if skips is None:
             self.skips = DEFAULT_SKIPS_PATTERN
         if github_api_endpoint is None:
@@ -87,7 +89,7 @@ class GitHubEventHandler(PullRequestMixin):
         if handler is None:
             raise ValueError('Unknown event: {}'.format(event_type))
 
-        result = yield defer.maybeDeferred(lambda: handler(payload, event_type))
+        result = yield handler(payload, event_type)
         return result
 
     @defer.inlineCallbacks
@@ -104,9 +106,9 @@ class GitHubEventHandler(PullRequestMixin):
         if self._secret and signature:
             try:
                 hash_type, hexdigest = signature.split('=')
-            except ValueError:
+            except ValueError as e:
                 raise ValueError(
-                    'Wrong signature format: {}'.format(signature))
+                    'Wrong signature format: {}'.format(signature)) from e
 
             if hash_type != 'sha1':
                 raise ValueError('Unknown hash type: {}'.format(hash_type))
@@ -177,6 +179,7 @@ class GitHubEventHandler(PullRequestMixin):
         comments = payload['pull_request']['body']
         repo_full_name = payload['repository']['full_name']
         head_sha = payload['pull_request']['head']['sha']
+        revlink = payload['pull_request']['_links']['html']['href']
 
         log.msg('Processing GitHub PR #{}'.format(number),
                 logLevel=logging.DEBUG)
@@ -192,13 +195,19 @@ class GitHubEventHandler(PullRequestMixin):
             log.msg("GitHub PR #{} {}, ignoring".format(number, action))
             return (changes, 'git')
 
-        properties = self.extractProperties(payload['pull_request'])
-        properties.update({'event': event})
-        properties.update({'basename': basename})
+        files = yield self._get_pr_files(repo_full_name, number)
+
+        properties = {
+            'pullrequesturl': revlink,
+            'event': event,
+            'basename': basename,
+            **self.extractProperties(payload['pull_request']),
+        }
         change = {
             'revision': payload['pull_request']['head']['sha'],
             'when_timestamp': dateparse(payload['pull_request']['created_at']),
             'branch': refname,
+            'files': files,
             'revlink': payload['pull_request']['_links']['html']['href'],
             'repository': payload['repository']['html_url'],
             'project': payload['pull_request']['base']['repo']['full_name'],
@@ -227,8 +236,9 @@ class GitHubEventHandler(PullRequestMixin):
         :param repo: the repo full name, ``{owner}/{project}``.
             e.g. ``buildbot/buildbot``
         '''
+
         headers = {
-            'User-Agent': 'Buildbot'
+            'User-Agent': 'Buildbot',
         }
         if self._token:
             headers['Authorization'] = 'token ' + self._token
@@ -238,9 +248,40 @@ class GitHubEventHandler(PullRequestMixin):
             self.master, self.github_api_endpoint, headers=headers,
             debug=self.debug, verify=self.verify)
         res = yield http.get(url)
-        data = yield res.json()
-        msg = data.get('commit', {'message': 'No message field'})['message']
-        return msg
+        if 200 <= res.code < 300:
+            data = yield res.json()
+            return data['commit']['message']
+
+        log.msg('Failed fetching PR commit message: response code {}'.format(res.code))
+        return 'No message field'
+
+    @defer.inlineCallbacks
+    def _get_pr_files(self, repo, number):
+        """
+        Get Files that belong to the Pull Request
+        :param repo: the repo full name, ``{owner}/{project}``.
+            e.g. ``buildbot/buildbot``
+        :param number: the pull request number.
+        """
+        headers = {"User-Agent": "Buildbot"}
+        if self._token:
+            headers["Authorization"] = "token " + self._token
+
+        url = "/repos/{}/pulls/{}/files".format(repo, number)
+        http = yield httpclientservice.HTTPClientService.getService(
+            self.master,
+            self.github_api_endpoint,
+            headers=headers,
+            debug=self.debug,
+            verify=self.verify,
+        )
+        res = yield http.get(url)
+        if 200 <= res.code < 300:
+            data = yield res.json()
+            return [f["filename"] for f in data]
+
+        log.msg('Failed fetching PR files: response code {}'.format(res.code))
+        return []
 
     def _process_change(self, payload, user, repo, repo_url, project, event,
                         properties):
@@ -318,7 +359,7 @@ class GitHubEventHandler(PullRequestMixin):
 
     def _has_skip(self, msg):
         '''
-        The message contains the skipping keyword no not.
+        The message contains the skipping keyword or not.
 
         :return type: Bool
         '''
@@ -344,7 +385,8 @@ class GitHubHandler(BaseHookHandler):
             'codebase': options.get('codebase', None),
             'github_property_whitelist': options.get('github_property_whitelist', None),
             'skips': options.get('skips', None),
-            'github_api_endpoint': options.get('github_api_endpoint', None) or 'https://api.github.com',
+            'github_api_endpoint':
+                options.get('github_api_endpoint', None) or 'https://api.github.com',
             'pullrequest_ref': options.get('pullrequest_ref', None) or 'merge',
             'token': options.get('token', None),
             'debug': options.get('debug', None) or False,

@@ -15,6 +15,8 @@
 
 import re
 from email import charset
+from email import encoders
+from email.header import Header
 from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -31,11 +33,15 @@ from buildbot import config
 from buildbot import interfaces
 from buildbot import util
 from buildbot.process.properties import Properties
-from buildbot.process.results import Results
-from buildbot.reporters.notifier import ENCODING
-from buildbot.reporters.notifier import NotifierBase
+from buildbot.reporters.base import ENCODING
+from buildbot.reporters.base import ReporterBase
+from buildbot.reporters.generators.build import BuildStatusGenerator
+from buildbot.reporters.generators.worker import WorkerMissingGenerator
 from buildbot.util import ssl
 from buildbot.util import unicode2bytes
+
+from .utils import merge_reports_prop
+from .utils import merge_reports_prop_take_first
 
 # this incantation teaches email to output utf-8 using 7- or 8-bit encoding,
 # although it has no effect before python-2.7.
@@ -59,8 +65,7 @@ except ImportError:
 #    Full Name <full.name@example.net>
 #    <full.name@example.net>
 VALID_EMAIL_ADDR = r"(?:\S+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.?)"
-VALID_EMAIL = re.compile(r"^(?:%s|(.+\s+)?<%s>\s*)$" %
-                         ((VALID_EMAIL_ADDR,) * 2))
+VALID_EMAIL = re.compile(r"^(?:{0}|(.+\s+)?<{0}>\s*)$".format(VALID_EMAIL_ADDR))
 VALID_EMAIL_ADDR = re.compile(VALID_EMAIL_ADDR)
 
 
@@ -80,30 +85,21 @@ class Domain(util.ComparableMixin):
 
 
 @implementer(interfaces.IEmailSender)
-class MailNotifier(NotifierBase):
+class MailNotifier(ReporterBase):
     secrets = ["smtpUser", "smtpPassword"]
 
-    def checkConfig(self, fromaddr, mode=("failing", "passing", "warnings"),
-                    tags=None, builders=None, addLogs=False,
-                    relayhost="localhost", buildSetSummary=False,
-                    subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                    lookup=None, extraRecipients=None,
-                    sendToInterestedUsers=True,
-                    messageFormatter=None, extraHeaders=None,
-                    addPatch=True, useTls=False, useSmtps=False,
+    def checkConfig(self, fromaddr, relayhost="localhost", lookup=None, extraRecipients=None,
+                    sendToInterestedUsers=True, extraHeaders=None, useTls=False, useSmtps=False,
                     smtpUser=None, smtpPassword=None, smtpPort=25,
-                    schedulers=None, branches=None,
-                    watchedWorkers='all', messageFormatterMissingWorker=None):
+                    dumpMailsToLog=False, generators=None):
         if ESMTPSenderFactory is None:
             config.error("twisted-mail is not installed - cannot "
                          "send mail")
 
-        super(MailNotifier, self).checkConfig(
-            mode=mode, tags=tags, builders=builders,
-            buildSetSummary=buildSetSummary, messageFormatter=messageFormatter,
-            subject=subject, addLogs=addLogs, addPatch=addPatch,
-            schedulers=schedulers, branches=branches,
-            watchedWorkers=watchedWorkers, messageFormatterMissingWorker=messageFormatterMissingWorker)
+        if generators is None:
+            generators = self._create_default_generators()
+
+        super().checkConfig(generators=generators)
 
         if extraRecipients is None:
             extraRecipients = []
@@ -127,24 +123,17 @@ class MailNotifier(NotifierBase):
         if useSmtps:
             ssl.ensureHasSSL(self.__class__.__name__)
 
-    def reconfigService(self, fromaddr, mode=("failing", "passing", "warnings"),
-                        tags=None, builders=None, addLogs=False,
-                        relayhost="localhost", buildSetSummary=False,
-                        subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                        lookup=None, extraRecipients=None,
-                        sendToInterestedUsers=True,
-                        messageFormatter=None, extraHeaders=None,
-                        addPatch=True, useTls=False, useSmtps=False,
+    @defer.inlineCallbacks
+    def reconfigService(self, fromaddr, relayhost="localhost", lookup=None, extraRecipients=None,
+                        sendToInterestedUsers=True, extraHeaders=None, useTls=False, useSmtps=False,
                         smtpUser=None, smtpPassword=None, smtpPort=25,
-                        schedulers=None, branches=None,
-                        watchedWorkers='all', messageFormatterMissingWorker=None):
+                        dumpMailsToLog=False, generators=None):
 
-        super(MailNotifier, self).reconfigService(
-            mode=mode, tags=tags, builders=builders,
-            buildSetSummary=buildSetSummary, messageFormatter=messageFormatter,
-            subject=subject, addLogs=addLogs, addPatch=addPatch,
-            schedulers=schedulers, branches=branches,
-            watchedWorkers=watchedWorkers, messageFormatterMissingWorker=messageFormatterMissingWorker)
+        if generators is None:
+            generators = self._create_default_generators()
+
+        yield super().reconfigService(generators=generators)
+
         if extraRecipients is None:
             extraRecipients = []
         self.extraRecipients = extraRecipients
@@ -161,26 +150,29 @@ class MailNotifier(NotifierBase):
         self.smtpUser = smtpUser
         self.smtpPassword = smtpPassword
         self.smtpPort = smtpPort
+        self.dumpMailsToLog = dumpMailsToLog
+
+    def _create_default_generators(self):
+        return [
+            BuildStatusGenerator(add_patch=True),
+            WorkerMissingGenerator(workers='all'),
+        ]
 
     def patch_to_attachment(self, patch, index):
         # patches are specifically converted to unicode before entering the db
         a = MIMEText(patch['body'].encode(ENCODING), _charset=ENCODING)
+        # convert to base64 to conform with RFC 5322 2.1.1
+        del a['Content-Transfer-Encoding']
+        encoders.encode_base64(a)
         a.add_header('Content-Disposition', "attachment",
                      filename="source patch " + str(index))
         return a
 
     @defer.inlineCallbacks
-    def createEmail(self, msgdict, builderName, title, results, builds=None,
-                    patches=None, logs=None):
+    def createEmail(self, msgdict, title, results, builds=None, patches=None, logs=None):
         text = msgdict['body']
         type = msgdict['type']
-        if msgdict.get('subject') is not None:
-            subject = msgdict['subject']
-        else:
-            subject = self.subject % {'result': Results[results],
-                                      'projectName': title,
-                                      'title': title,
-                                      'builder': builderName}
+        subject = msgdict['subject']
 
         assert '\n' not in subject, \
             "Subject cannot contain newlines"
@@ -208,23 +200,22 @@ class MailNotifier(NotifierBase):
                 m.attach(a)
         if logs:
             for log in logs:
-                name = "{}.{}".format(log['stepname'],
-                                      log['name'])
-                if (self._shouldAttachLog(log['name']) or
-                        self._shouldAttachLog(name)):
-                    # Use distinct filenames for the e-mail summary
-                    if self.buildSetSummary:
-                        filename = "{}.{}".format(log['buildername'],
-                                                  name)
-                    else:
-                        filename = name
+                # Use distinct filenames for the e-mail summary
+                name = "{}.{}".format(log['stepname'], log['name'])
+                if len(builds) > 1:
+                    filename = "{}.{}".format(log['buildername'], name)
+                else:
+                    filename = name
 
-                    text = log['content']['content']
-                    a = MIMEText(text.encode(ENCODING),
-                                 _charset=ENCODING)
-                    a.add_header('Content-Disposition', "attachment",
-                                 filename=filename)
-                    m.attach(a)
+                text = log['content']['content']
+                a = MIMEText(text.encode(ENCODING),
+                             _charset=ENCODING)
+                # convert to base64 to conform with RFC 5322 2.1.1
+                del a['Content-Transfer-Encoding']
+                encoders.encode_base64(a)
+                a.add_header('Content-Disposition', "attachment",
+                             filename=filename)
+                m.attach(a)
 
         # @todo: is there a better way to do this?
         # Add any extra headers that were requested, doing WithProperties
@@ -246,9 +237,17 @@ class MailNotifier(NotifierBase):
         return m
 
     @defer.inlineCallbacks
-    def sendMessage(self, body, subject=None, type='plain', builderName=None,
-                    results=None, builds=None, users=None,
-                    patches=None, logs=None, worker=None):
+    def sendMessage(self, reports):
+        body = merge_reports_prop(reports, 'body')
+        subject = merge_reports_prop_take_first(reports, 'subject')
+        type = merge_reports_prop_take_first(reports, 'type')
+        results = merge_reports_prop(reports, 'results')
+        builds = merge_reports_prop(reports, 'builds')
+        users = merge_reports_prop(reports, 'users')
+        patches = merge_reports_prop(reports, 'patches')
+        logs = merge_reports_prop(reports, 'logs')
+        worker = merge_reports_prop_take_first(reports, 'worker')
+
         body = unicode2bytes(body)
         msgdict = {'body': body, 'subject': subject, 'type': type}
 
@@ -256,8 +255,8 @@ class MailNotifier(NotifierBase):
         if not body.endswith(b"\n\n"):
             msgdict['body'] = body + b'\n\n'
 
-        m = yield self.createEmail(msgdict, builderName, self.master.config.title,
-                                   results, builds, patches, logs)
+        m = yield self.createEmail(msgdict, self.master.config.title, results, builds,
+                                   patches, logs)
 
         # now, who is this message going to?
         if worker is None:
@@ -266,11 +265,6 @@ class MailNotifier(NotifierBase):
         else:
             all_recipients = list(users)
         yield self.sendMail(m, all_recipients)
-
-    def _shouldAttachLog(self, logname):
-        if isinstance(self.addLogs, bool):
-            return self.addLogs
-        return logname in self.addLogs
 
     @defer.inlineCallbacks
     def findInterrestedUsersEmails(self, users):
@@ -298,6 +292,12 @@ class MailNotifier(NotifierBase):
 
         return recipients
 
+    def formatAddress(self, addr):
+        r = parseaddr(addr)
+        if not r[0]:
+            return r[1]
+        return "\"{}\" <{}>".format(Header(r[0], 'utf-8').encode(), r[1])
+
     def processRecipients(self, blamelist, m):
         to_recipients = set(blamelist)
         cc_recipients = set()
@@ -310,15 +310,17 @@ class MailNotifier(NotifierBase):
         else:
             to_recipients.update(self.extraRecipients)
 
-        m['To'] = ", ".join(sorted(to_recipients))
+        m['To'] = ", ".join([self.formatAddress(addr) for addr in sorted(to_recipients)])
         if cc_recipients:
-            m['CC'] = ", ".join(sorted(cc_recipients))
+            m['CC'] = ", ".join([self.formatAddress(addr) for addr in sorted(cc_recipients)])
 
         return list(to_recipients | cc_recipients)
 
     def sendMail(self, m, recipients):
         s = m.as_string()
         twlog.msg("sending mail ({} bytes) to".format(len(s)), recipients)
+        if self.dumpMailsToLog:  # pragma: no cover
+            twlog.msg("mail data:\n{0}".format(s))
 
         result = defer.Deferred()
 
@@ -339,7 +341,3 @@ class MailNotifier(NotifierBase):
             reactor.connectTCP(self.relayhost, self.smtpPort, sender_factory)
 
         return result
-
-    def isWorkerMessageNeeded(self, worker):
-        return super(MailNotifier, self).isWorkerMessageNeeded(worker) \
-               and worker['notify']

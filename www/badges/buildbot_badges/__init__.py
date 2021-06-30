@@ -103,7 +103,8 @@ class Api:
             elif results >= 0 and results < len(Results):
                 results_txt = Results[results]
 
-        svgdata = self.makesvg(results_txt, results_txt, left_text=config['left_text'], config=config)
+        svgdata = self.makesvg(results_txt, results_txt, left_text=config['left_text'],
+                               config=config)
         defer.returnValue(svgdata)
 
     def textwidth(self, text, config):
@@ -113,7 +114,7 @@ class Api:
         ctx = cairo.Context(surface)
         ctx.select_font_face(config['font_face'],
                              cairo.FONT_SLANT_NORMAL,
-                             cairo.FONT_WEIGHT_BOLD)
+                             cairo.FONT_WEIGHT_NORMAL)
         ctx.set_font_size(int(config['font_size']))
         return ctx.text_extents(text)[4]
 

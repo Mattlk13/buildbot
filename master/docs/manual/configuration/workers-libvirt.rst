@@ -79,9 +79,9 @@ That copy will be thrown away every time a build is complete.
     from buildbot.plugins import worker, util
     c['workers'] = [
         worker.LibVirtWorker('minion1', 'sekrit',
-                             util.Connection("qemu:///session"),
-                             '/home/buildbot/images/minion1',
-                             '/home/buildbot/images/base_image')
+                             uri="qemu:///session",
+                             hd_image='/home/buildbot/images/minion1',
+                             base_image='/home/buildbot/images/base_image')
     ]
 
 You can use virt-manager to define ``minion1`` with the correct hardware.
@@ -96,7 +96,7 @@ If you don't, buildbot won't be able to find a VM to start.
     A password for the buildbot to login to the master with.
 
 ``connection``
-    :class:`Connection` instance wrapping connection to libvirt.
+    :class:`Connection` instance wrapping connection to libvirt. (deprecated, use ``uri``).
 
 ``hd_image``
     The path to a libvirt disk image, normally in qcow2 format when using KVM.
@@ -105,11 +105,28 @@ If you don't, buildbot won't be able to find a VM to start.
     If given a base image, buildbot will clone it every time it starts a VM.
     This means you always have a clean environment to do your build in.
 
+``uri``
+    The URI of the connection to libvirt.
+
+``masterFQDN``
+    (optional, defaults to ``socket.getfqdn()``)
+    Address of the master the worker should connect to.
+    Use if you master machine does not have proper fqdn.
+    This value is passed to the libvirt image via domain metadata.
+
 ``xml``
     If a VM isn't predefined in virt-manager, then you can instead provide XML like that used with ``virsh define``.
     The VM will be created automatically when needed, and destroyed when not needed any longer.
     
 .. note:: The ``hd_image`` and ``base_image`` must be on same machine with buildbot master.
+
+Connection to master
+--------------------
+
+If ``xml`` configuration key is not provided, then Buildbot will set libvirt metadata for the domain.
+It will contain the following XML element: ``<auth username="..." password="..." master="..."/>``.
+Here ``username``, ``password`` and ``master`` are the name of the worker, password to use for connection and the FQDN of the master.
+The libvirt metadata will be placed in the XML namespace ``buildbot=http://buildbot.net/``.
 
 Configuring Master to use libvirt on remote server
 ---------------------------------------------------
@@ -143,30 +160,32 @@ Configure remote libvirt server:
    
    # build-vm - VM name in virsh list --all
    # vm_base_image.qcow2 - base image file name, must exist in path /var/lib/libvirt/images/
-   # vm_temp_image.qcow2 - temporary image. Must not exist in path /var/lib/libvirt/images/, but defined in VM config file
+   # vm_temp_image.qcow2 - temporary image. Must not exist in path /var/lib/libvirt/images/, but
+   # defined in VM config file
    domains = {
        'build-vm' : ['vm_base_image.qcow2', 'vm_temp_image.qcow2'],
    }
 
    def delete_image_clone(vir_domain):
        if vir_domain in domains:
-	        domain = domains[vir_domain]
-	        os.remove(images_path + domain[1])
+           domain = domains[vir_domain]
+           os.remove(images_path + domain[1])
 
    def create_image_clone(vir_domain):
        if vir_domain in domains:
-	        domain = domains[vir_domain]
-	        cmd = ['/usr/bin/qemu-img', 'create', '-b', images_path + domain[0], '-f', 'qcow2', images_path + domain[1]]
-	        subprocess.call(cmd)
+           domain = domains[vir_domain]
+           cmd = ['/usr/bin/qemu-img', 'create', '-b', images_path + domain[0],
+                  '-f', 'qcow2', images_path + domain[1]]
+           subprocess.call(cmd)
 
    if __name__ == "__main__":
        vir_domain, action = sys.argv[1:3]
 
        if action in ["prepare"]:
-	        create_image_clone(vir_domain)
+           create_image_clone(vir_domain)
 
        if action in ["release"]:
-	        delete_image_clone(vir_domain)
+           delete_image_clone(vir_domain)
 
 Configure buildbot server:
 
@@ -177,8 +196,9 @@ Configure buildbot server:
 
     from buildbot.plugins import worker, util
     c['workers'] = [
-        worker.LibVirtWorker('minion1', 'sekrit',
-                             util.Connection("qemu+ssh://<user>@<ip address or DNS name>:<port>/session"),
-                             '/home/buildbot/images/minion1')
+        worker.LibVirtWorker(
+            'minion1', 'sekrit',
+            util.Connection("qemu+ssh://<user>@<ip address or DNS name>:<port>/session"),
+            '/home/buildbot/images/minion1')
     ]
 

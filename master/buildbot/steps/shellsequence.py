@@ -21,36 +21,44 @@ from twisted.python import log
 from buildbot import config
 from buildbot.process import buildstep
 from buildbot.process import results
+from buildbot.warnings import warn_deprecated
 
 
 class ShellArg(results.ResultComputingConfigMixin):
     publicAttributes = (
         results.ResultComputingConfigMixin.resultConfig +
-        ["command", "logfile"])
+        ["command", "logname"])
 
-    def __init__(self, command=None, logfile=None, **kwargs):
+    def __init__(self, command=None, logname=None, logfile=None, **kwargs):
         name = self.__class__.__name__
         if command is None:
-            config.error("the 'command' parameter of %s "
-                         "must not be None" % (name,))
+            config.error(("the 'command' parameter of {} "
+                          "must not be None").format(name))
         self.command = command
-        self.logfile = logfile
+
+        self.logname = logname
+        if logfile is not None:
+            warn_deprecated('2.10.0', "{}: logfile is deprecated, use logname")
+            if self.logname is not None:
+                config.error(("{}: the 'logfile' parameter must not be specified when 'logname' " +
+                              "is set").format(name))
+            self.logname = logfile
+
         for k, v in kwargs.items():
             if k not in self.resultConfig:
-                config.error("the parameter '%s' is not "
-                             "handled by ShellArg" % (k,))
+                config.error(("the parameter '{}' is not "
+                              "handled by ShellArg").format(k))
             setattr(self, k, v)
         # we don't validate anything yet as we can have renderables.
 
     def validateAttributes(self):
         # only make the check if we have a list
         if not isinstance(self.command, (str, list)):
-            config.error("%s is an invalid command, "
-                         "it must be a string or a list" % (self.command,))
+            config.error(("{} is an invalid command, "
+                          "it must be a string or a list").format(self.command))
         if isinstance(self.command, list):
             if not all([isinstance(x, str) for x in self.command]):
-                config.error("%s must only have strings in it" %
-                             (self.command,))
+                config.error("{} must only have strings in it".format(self.command))
         runConfParams = [(p_attr, getattr(self, p_attr))
                          for p_attr in self.resultConfig]
         not_bool = [(p_attr, p_val) for (p_attr, p_val) in runConfParams if not isinstance(p_val,
@@ -97,8 +105,7 @@ class ShellSequence(buildstep.ShellMixin, buildstep.BuildStep):
             try:
                 arg.validateAttributes()
             except config.ConfigErrors as e:
-                log.msg("After rendering, ShellSequence `commands` is "
-                        "invalid: %s" % (e,))
+                log.msg("After rendering, ShellSequence `commands` is invalid: {}".format(e))
                 return results.EXCEPTION
 
             # handle the command from the arg
@@ -110,7 +117,7 @@ class ShellSequence(buildstep.ShellMixin, buildstep.BuildStep):
             self.last_command = command
 
             cmd = yield self.makeRemoteShellCommand(command=command,
-                                                    stdioLogName=arg.logfile)
+                                                    stdioLogName=arg.logname)
             yield self.runCommand(cmd)
             overall_result, terminate = results.computeResultAndTermination(
                 arg, cmd.results(), overall_result)

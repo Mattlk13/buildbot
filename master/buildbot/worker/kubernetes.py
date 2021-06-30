@@ -24,10 +24,10 @@ from buildbot.worker.docker import DockerBaseWorker
 log = Logger()
 
 
-class KubeLatentWorker(DockerBaseWorker, CompatibleLatentWorkerMixin):
+class KubeLatentWorker(CompatibleLatentWorkerMixin,
+                       DockerBaseWorker):
 
     instance = None
-    builds_may_be_incompatible = True
 
     @defer.inlineCallbacks
     def getPodSpec(self, build):
@@ -61,7 +61,8 @@ class KubeLatentWorker(DockerBaseWorker, CompatibleLatentWorkerMixin):
 
     def getServicesContainers(self, build):
         # customization point to create services containers around the build container
-        # those containers will run within the same localhost as the build container (aka within the same pod)
+        # those containers will run within the same localhost as the build container (aka within
+        # the same pod)
         return []
 
     def renderWorkerProps(self, build_props):
@@ -108,12 +109,13 @@ class KubeLatentWorker(DockerBaseWorker, CompatibleLatentWorkerMixin):
         try:
             yield self._kube.createPod(self.namespace, pod_spec)
         except kubeclientservice.KubeError as e:
-            raise LatentWorkerFailedToSubstantiate(str(e))
+            raise LatentWorkerFailedToSubstantiate(str(e)) from e
         defer.returnValue(True)
 
     @defer.inlineCallbacks
     def stop_instance(self, fast=False, reportFailure=True):
         self.current_pod_spec = None
+        self.resetWorkerPropsOnStop()
         try:
             yield self._kube.deletePod(self.namespace, self.getContainerName())
         except kubeclientservice.KubeError as e:

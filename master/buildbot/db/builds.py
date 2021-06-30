@@ -127,7 +127,8 @@ class BuildsConnectorComponent(base.DBConnectorComponent):
         return self.db.pool.do(thd)
 
     # returns a Deferred that returns a value
-    def getBuilds(self, builderid=None, buildrequestid=None, workerid=None, complete=None, resultSpec=None):
+    def getBuilds(self, builderid=None, buildrequestid=None, workerid=None, complete=None,
+                  resultSpec=None):
         def thd(conn):
             tbl = self.db.model.builds
             q = tbl.select()
@@ -199,7 +200,7 @@ class BuildsConnectorComponent(base.DBConnectorComponent):
             tbl = self.db.model.builds
             q = tbl.update(whereclause=(tbl.c.id == buildid))
             conn.execute(q,
-                         complete_at=self.master.reactor.seconds(),
+                         complete_at=int(self.master.reactor.seconds()),
                          results=results)
         return self.db.pool.do(thd)
 

@@ -60,20 +60,20 @@ def timed_do_fn(f):
         descr = "%s-%08x" % (name, id)
 
         start_time = time.time()
-        log.msg("%s - before ('%s' line %d)" % (descr, file, line))
+        log.msg("{} - before ('{}' line {})".format(descr, file, line))
         for name in locals:
             if name in ('self', 'thd'):
                 continue
-            log.msg("%s -   %s = %r" % (descr, name, locals[name]))
+            log.msg("{} - {} = {}".format(descr, name, repr(locals[name])))
 
         # wrap the callable to log the begin and end of the actual thread
         # function
         def callable_wrap(*args, **kargs):
-            log.msg("%s - thd start" % (descr,))
+            log.msg("{} - thd start".format(descr))
             try:
                 return callable(*args, **kwargs)
             finally:
-                log.msg("%s - thd end" % (descr,))
+                log.msg("{} - thd end".format(descr))
         d = f(callable_wrap, *args, **kwargs)
 
         @d.addBoth
@@ -120,7 +120,7 @@ class DBThreadPool:
         if engine.dialect.name == 'sqlite':
             vers = self.get_sqlite_version()
             if vers < (3, 7):
-                log_msg("Using SQLite Version %s" % (vers,))
+                log_msg("Using SQLite Version {}".format(vers))
                 log_msg("NOTE: this old version of SQLite does not support "
                         "WAL journal mode; a busy master may encounter "
                         "'Database is locked' errors.  Consider upgrading.")
@@ -140,16 +140,23 @@ class DBThreadPool:
         if not self.running:
             self._pool.start()
             self._stop_evt = self.reactor.addSystemEventTrigger(
-                'during', 'shutdown', self._stop)
+                'during', 'shutdown', self._stop_nowait)
             self.running = True
 
-    def _stop(self):
+    def _stop_nowait(self):
         self._stop_evt = None
-        threads.deferToThreadPool(
-            self.reactor, self._pool, self.engine.dispose)
+        threads.deferToThreadPool(self.reactor, self._pool, self.engine.dispose)
         self._pool.stop()
         self.running = False
 
+    @defer.inlineCallbacks
+    def _stop(self):
+        self._stop_evt = None
+        yield threads.deferToThreadPool(self.reactor, self._pool, self.engine.dispose)
+        self._pool.stop()
+        self.running = False
+
+    @defer.inlineCallbacks
     def shutdown(self):
         """Manually stop the pool.  This is only necessary from tests, as the
         pool will stop itself when the reactor stops under normal
@@ -157,7 +164,7 @@ class DBThreadPool:
         if not self._stop_evt:
             return  # pool is already stopped
         self.reactor.removeSystemEventTrigger(self._stop_evt)
-        self._stop()
+        yield self._stop()
 
     # Try about 170 times over the space of a day, with the last few tries
     # being about an hour apart.  This is designed to span a reasonable amount

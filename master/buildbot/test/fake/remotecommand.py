@@ -18,9 +18,9 @@ import functools
 from twisted.internet import defer
 from twisted.python import failure
 
+from buildbot.process.results import CANCELLED
 from buildbot.process.results import FAILURE
 from buildbot.process.results import SUCCESS
-from buildbot.test.fake import logfile
 
 
 class FakeRemoteCommand:
@@ -29,6 +29,10 @@ class FakeRemoteCommand:
     testcase = None
 
     active = False
+
+    interrupted = False
+
+    _waiting_for_interrupt = False
 
     def __init__(self, remote_command, args,
                  ignore_updates=False, collectStdout=False, collectStderr=False,
@@ -40,6 +44,7 @@ class FakeRemoteCommand:
         self.remote_command = remote_command
         self.args = args.copy()
         self.logs = {}
+        self._log_close_when_finished = {}
         self.delayedLogs = {}
         self.rc = -999
         self.collectStdout = collectStdout
@@ -52,22 +57,73 @@ class FakeRemoteCommand:
         if collectStderr:
             self.stderr = ''
 
+    @defer.inlineCallbacks
     def run(self, step, conn, builder_name):
+        if self._waiting_for_interrupt:
+            yield step.interrupt('interrupt reason')
+            if not self.interrupted:
+                raise RuntimeError("Interrupted step, but command was not interrupted")
+
         # delegate back to the test case
-        return self.testcase._remotecommand_run(self, step, conn, builder_name)
+        cmd = yield self.testcase._remotecommand_run(self, step, conn, builder_name)
+        for name, log_ in self.logs.items():
+            if self._log_close_when_finished[name]:
+                log_.finish()
+        return cmd
 
     def useLog(self, log_, closeWhenFinished=False, logfileName=None):
         if not logfileName:
             logfileName = log_.getName()
+        assert logfileName not in self.logs
+        assert logfileName not in self.delayedLogs
         self.logs[logfileName] = log_
+        self._log_close_when_finished[logfileName] = closeWhenFinished
 
     def useLogDelayed(self, logfileName, activateCallBack, closeWhenFinished=False):
+        assert logfileName not in self.logs
+        assert logfileName not in self.delayedLogs
         self.delayedLogs[logfileName] = (activateCallBack, closeWhenFinished)
 
+    def addStdout(self, data):
+        if self.collectStdout:
+            self.stdout += data
+        if self.stdioLogName is not None and self.stdioLogName in self.logs:
+            self.logs[self.stdioLogName].addStdout(data)
+
+    def addStderr(self, data):
+        if self.collectStderr:
+            self.stderr += data
+        if self.stdioLogName is not None and self.stdioLogName in self.logs:
+            self.logs[self.stdioLogName].addStderr(data)
+
+    def addHeader(self, data):
+        if self.stdioLogName is not None and self.stdioLogName in self.logs:
+            self.logs[self.stdioLogName].addHeader(data)
+
+    @defer.inlineCallbacks
+    def addToLog(self, logname, data):
+        # Activate delayed logs on first data.
+        if logname in self.delayedLogs:
+            (activate_callback, close_when_finished) = self.delayedLogs[logname]
+            del self.delayedLogs[logname]
+            loog = yield activate_callback(self)
+            self.logs[logname] = loog
+            self._log_close_when_finished[logname] = close_when_finished
+
+        if logname in self.logs:
+            self.logs[logname].addStdout(data)
+        else:
+            raise Exception("{}.addToLog: no such log {}".format(self, logname))
+
     def interrupt(self, why):
-        raise NotImplementedError
+        if not self._waiting_for_interrupt:
+            raise RuntimeError("Got interrupt, but FakeRemoteCommand was not expecting it")
+        self._waiting_for_interrupt = False
+        self.interrupted = True
 
     def results(self):
+        if self.interrupted:
+            return CANCELLED
         if self.rc in self.decodeRC:
             return self.decodeRC[self.rc]
         return FAILURE
@@ -75,10 +131,8 @@ class FakeRemoteCommand:
     def didFail(self):
         return self.results() == FAILURE
 
-    def fakeLogData(self, step, log, header='', stdout='', stderr=''):
-        # note that this should not be used in the same test as useLog(Delayed)
-        self.logs[log] = fakelog = logfile.FakeLogFile(log, step)
-        fakelog.fakeData(header=header, stdout=stdout, stderr=stderr)
+    def set_run_interrupt(self):
+        self._waiting_for_interrupt = True
 
     def __repr__(self):
         return "FakeRemoteCommand(" + repr(self.remote_command) + "," + repr(self.args) + ")"
@@ -102,6 +156,9 @@ class FakeRemoteShellCommand(FakeRemoteCommand):
                     initial_stdin=initialStdin,
                     timeout=timeout, maxTime=maxTime, logfiles=logfiles,
                     usePTY=usePTY, logEnviron=logEnviron)
+
+        if interruptSignal is not None and interruptSignal != 'KILL':
+            args['interruptSignal'] = interruptSignal
         super().__init__("shell", args,
                          collectStdout=collectStdout,
                          collectStderr=collectStderr,
@@ -149,19 +206,14 @@ class Expect:
 
     """
 
-    def __init__(self, remote_command, args, incomparable_args=None):
+    def __init__(self, remote_command, args, interrupted=False):
         """
-
-        Expect a command named C{remote_command}, with args C{args}.  Any args
-        in C{incomparable_args} are not cmopared, but must exist.
-
+        Expect a command named C{remote_command}, with args C{args}.
         """
-        if incomparable_args is None:
-            incomparable_args = []
         self.remote_command = remote_command
-        self.incomparable_args = incomparable_args
         self.args = args
         self.result = None
+        self.interrupted = interrupted
         self.behaviors = []
 
     @classmethod
@@ -214,21 +266,26 @@ class Expect:
             command.updates.setdefault(args[0], []).append(args[1])
         elif behavior == 'log':
             name, streams = args
-            if 'header' in streams:
-                command.logs[name].addHeader(streams['header'])
-            if 'stdout' in streams:
-                command.logs[name].addStdout(streams['stdout'])
-                if command.collectStdout:
-                    command.stdout += streams['stdout']
-            if 'stderr' in streams:
-                command.logs[name].addStderr(streams['stderr'])
-                if command.collectStderr:
-                    command.stderr += streams['stderr']
+            for stream in streams:
+                if stream not in ['header', 'stdout', 'stderr']:
+                    raise Exception('Log stream {} is not recognized'.format(stream))
+
+            if name == command.stdioLogName:
+                if 'header' in streams:
+                    command.addHeader(streams['header'])
+                if 'stdout' in streams:
+                    command.addStdout(streams['stdout'])
+                if 'stderr' in streams:
+                    command.addStderr(streams['stderr'])
+            else:
+                if 'header' in streams or 'stderr' in streams:
+                    raise Exception('Non stdio streams only support stdout')
+                return command.addToLog(name, streams['stdout'])
         elif behavior == 'callable':
             return defer.maybeDeferred(lambda: args[0](command))
         else:
-            return defer.fail(failure.Failure(
-                AssertionError('invalid behavior %s' % behavior)))
+            return defer.fail(failure.Failure(AssertionError('invalid behavior {}'.format(
+                    behavior))))
         return defer.succeed(None)
 
     @defer.inlineCallbacks
@@ -304,7 +361,7 @@ class ExpectShell(Expect):
     def __init__(self, workdir, command, env=None,
                  want_stdout=1, want_stderr=1, initialStdin=None,
                  timeout=20 * 60, maxTime=None, logfiles=None,
-                 usePTY=None, logEnviron=True):
+                 usePTY=None, logEnviron=True, interruptSignal=None):
         if env is None:
             env = {}
         if logfiles is None:
@@ -314,6 +371,8 @@ class ExpectShell(Expect):
                     initial_stdin=initialStdin,
                     timeout=timeout, maxTime=maxTime, logfiles=logfiles,
                     usePTY=usePTY, logEnviron=logEnviron)
+        if interruptSignal is not None:
+            args['interruptSignal'] = interruptSignal
         super().__init__("shell", args)
 
     def __repr__(self):

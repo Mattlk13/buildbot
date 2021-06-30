@@ -13,8 +13,11 @@
 #
 # Copyright Buildbot Team Members
 
+from twisted.internet import defer
+
 from buildbot.util import service
 from buildbot.util import subscription
+from buildbot.util.eventual import eventually
 
 
 class Listener(service.ReconfigurableServiceMixin, service.AsyncMultiService):
@@ -24,12 +27,8 @@ class Listener(service.ReconfigurableServiceMixin, service.AsyncMultiService):
 class Connection:
     proxies = {}
 
-    def __init__(self, master, worker):
-        self.master = master
-        self.worker = worker
-        name = worker.workername
-        self._disconnectSubs = subscription.SubscriptionPoint(
-            "disconnections from %s" % name)
+    def __init__(self, name):
+        self._disconnectSubs = subscription.SubscriptionPoint("disconnections from {}".format(name))
 
     # This method replace all Impl args by their Proxy protocol implementation
     def createArgsProxies(self, args):
@@ -40,7 +39,16 @@ class Connection:
                     v = proxyclass(v)
             newargs[k] = v
         return newargs
+
     # disconnection handling
+
+    def wait_shutdown_started(self):
+        d = defer.Deferred()
+        self.notifyOnDisconnect(lambda: eventually(d.callback, None))
+        return d
+
+    def waitShutdown(self):
+        return self._disconnectSubs.waitForDeliveriesToFinish()
 
     def notifyOnDisconnect(self, cb):
         return self._disconnectSubs.subscribe(cb)

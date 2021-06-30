@@ -16,6 +16,7 @@
 # pylint: disable=C0111
 
 import traceback
+import warnings
 from pkg_resources import iter_entry_points
 
 from zope.interface import Invalid
@@ -35,10 +36,14 @@ class _PluginEntry:
         self._entry = entry
         self._value = None
         self._loader = loader
+        self._load_warnings = []
 
     def load(self):
         if self._value is None:
-            self._value = self._loader(self._entry)
+            with warnings.catch_warnings(record=True) as all_warnings:
+                warnings.simplefilter("always")
+                self._value = self._loader(self._entry)
+                self._load_warnings = list(all_warnings)
 
     @property
     def group(self):
@@ -59,6 +64,8 @@ class _PluginEntry:
     @property
     def value(self):
         self.load()
+        for w in self._load_warnings:
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
         return self._value
 
 
@@ -118,11 +125,10 @@ class _NSNode:
             if child is not None:
                 assert isinstance(child, _PluginEntry)
                 if child != entry:
-                    raise PluginDBError('Duplicate entry point for "%s:%s".\n'
-                                        '  Previous definition %s\n'
-                                        '  This definition %s' %
-                                        (child.group, child.name, child.info,
-                                         entry.info))
+                    raise PluginDBError(('Duplicate entry point for "{}:{}".\n'
+                                         '  Previous definition {}\n'
+                                         '  This definition {}').format(child.group, child.name,
+                                                                        child.info, entry.info))
             else:
                 self._children[key] = entry
         else:
@@ -135,7 +141,7 @@ class _NSNode:
     def __getattr__(self, name):
         child = self._children.get(name)
         if child is None:
-            raise PluginDBError('Unknown component name: %s' % name)
+            raise PluginDBError('Unknown component name: {}'.format(name))
 
         if isinstance(child, _PluginEntry):
             return child.value
@@ -159,11 +165,10 @@ class _NSNode:
 
         if isinstance(child, _PluginEntry):
             if not is_leaf:
-                raise PluginDBError('Excessive namespace specification: %s' %
-                                    path[0])
+                raise PluginDBError('Excessive namespace specification: {}'.format(path[0]))
             return child
         elif child is None:
-            raise PluginDBError('Unknown component name: %s' % name)
+            raise PluginDBError('Unknown component name: {}'.format(name))
         else:
             return child._get(path[0])
 
@@ -174,7 +179,7 @@ class _NSNode:
                 result.append((key, child.info))
             else:
                 result.extend([
-                    ('%s.%s' % (key, name), value)
+                    ('{}.{}'.format(key, name), value)
                     for name, value in child.info_all().items()
                 ])
         return result
@@ -193,7 +198,7 @@ class _Plugins:
         if interface is not None:
             assert interface.isOrExtends(IPlugin)
 
-        self._group = '%s.%s' % (_NAMESPACE_BASE, namespace)
+        self._group = '{}.{}'.format(_NAMESPACE_BASE, namespace)
 
         self._interface = interface
         self._check_extras = check_extras
@@ -205,25 +210,23 @@ class _Plugins:
         if self._check_extras:
             try:
                 entry.require()
-            except Exception as err:
-                raise PluginDBError('Requirements are not satisfied '
-                                    'for %s:%s: %s' % (self._group,
-                                                       entry.name,
-                                                       str(err)))
+            except Exception as e:
+                raise PluginDBError(('Requirements are not satisfied '
+                                     'for {}:{}: {}').format(
+                                         self._group, entry.name, str(e))) from e
         try:
             result = entry.load()
-        except Exception as err:
+        except Exception as e:
             # log full traceback of the bad entry to help support
             traceback.print_exc()
-            raise PluginDBError('Unable to load %s:%s: %s' %
-                                (self._group, entry.name, str(err)))
+            raise PluginDBError('Unable to load {}:{}: {}'.format(self._group, entry.name,
+                                                                  str(e))) from e
         if self._interface:
             try:
                 verifyClass(self._interface, result)
-            except Invalid as err:
-                raise PluginDBError('Plugin %s:%s does not implement %s: %s' %
-                                    (self._group, entry.name,
-                                     self._interface.__name__, str(err)))
+            except Invalid as e:
+                raise PluginDBError('Plugin {}:{} does not implement {}: {}'.format(self._group,
+                        entry.name, self._interface.__name__, str(e))) from e
         return result
 
     @property
@@ -268,11 +271,14 @@ class _Plugins:
         """
         return self._tree.get(name)
 
+    def _get_entry(self, name):
+        return self._tree._get(name)
+
     def __getattr__(self, name):
         try:
             return getattr(self._tree, name)
-        except PluginDBError as err:
-            raise AttributeError(str(err))
+        except PluginDBError as e:
+            raise AttributeError(str(e)) from e
 
 
 class _PluginDB:

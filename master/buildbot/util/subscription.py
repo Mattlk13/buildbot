@@ -14,8 +14,10 @@
 # Copyright Buildbot Team Members
 
 
-from twisted.python import failure
+from twisted.internet import defer
 from twisted.python import log
+
+from buildbot.util import Notifier
 
 
 class SubscriptionPoint:
@@ -23,9 +25,12 @@ class SubscriptionPoint:
     def __init__(self, name):
         self.name = name
         self.subscriptions = set()
+        self._unfinished_deliveries = []
+        self._unfinished_notifier = Notifier()
+        self._got_exceptions = []
 
     def __str__(self):
-        return "<SubscriptionPoint '%s'>" % self.name
+        return "<SubscriptionPoint '{}'>".format(self.name)
 
     def subscribe(self, callback):
         sub = Subscription(self, callback)
@@ -33,15 +38,42 @@ class SubscriptionPoint:
         return sub
 
     def deliver(self, *args, **kwargs):
+        self._unfinished_deliveries.append(self)
         for sub in list(self.subscriptions):
             try:
-                sub.callback(*args, **kwargs)
-            except Exception:
-                log.err(failure.Failure(),
-                        'while invoking callback %s to %s' % (sub.callback, self))
+                d = sub.callback(*args, **kwargs)
+                if isinstance(d, defer.Deferred):
+                    self._unfinished_deliveries.append(d)
+                    d.addErrback(self._notify_delivery_exception, sub)
+                    d.addBoth(self._notify_delivery_finished, d)
+
+            except Exception as e:
+                self._notify_delivery_exception(e, sub)
+
+        self._notify_delivery_finished(None, self)
+
+    def waitForDeliveriesToFinish(self):
+        # returns a deferred
+        if not self._unfinished_deliveries:
+            return defer.succeed(None)
+        return self._unfinished_notifier.wait()
+
+    def pop_exceptions(self):
+        exceptions = self._got_exceptions
+        self._got_exceptions = None
+        return exceptions
 
     def _unsubscribe(self, subscription):
         self.subscriptions.remove(subscription)
+
+    def _notify_delivery_exception(self, e, sub):
+        log.err(e, 'while invoking callback {} to {}'.format(sub.callback, self))
+        self._got_exceptions.append(e)
+
+    def _notify_delivery_finished(self, _, d):
+        self._unfinished_deliveries.remove(d)
+        if not self._unfinished_deliveries:
+            self._unfinished_notifier.notify(None)
 
 
 class Subscription:

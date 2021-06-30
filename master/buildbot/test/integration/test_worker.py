@@ -22,8 +22,12 @@ from buildbot.interfaces import IBuildStepFactory
 from buildbot.machine.base import Machine
 from buildbot.process.buildstep import BuildStep
 from buildbot.process.factory import BuildFactory
+from buildbot.process.properties import Interpolate
 from buildbot.process.results import CANCELLED
+from buildbot.process.results import RETRY
 from buildbot.test.fake.latent import LatentController
+from buildbot.test.fake.step import BuildStepController
+from buildbot.test.fake.worker import WorkerController
 from buildbot.test.util.integration import RunFakeMasterTestCase
 
 try:
@@ -84,19 +88,19 @@ class Tests(RunFakeMasterTestCase):
             'protocols': {'null': {}},
             'multiMaster': True,
         }
-        master = yield self.getMaster(config_dict)
+        yield self.setup_master(config_dict)
         builder_ids = [
-            (yield master.data.updates.findBuilderId('testy-1')),
-            (yield master.data.updates.findBuilderId('testy-2')),
+            (yield self.master.data.updates.findBuilderId('testy-1')),
+            (yield self.master.data.updates.findBuilderId('testy-2')),
         ]
 
         started_builds = []
-        yield master.mq.startConsuming(
+        yield self.master.mq.startConsuming(
             lambda key, build: started_builds.append(build),
             ('builds', None, 'new'))
 
         # Trigger a buildrequest
-        bsid, brids = yield master.data.updates.addBuildset(
+        bsid, brids = yield self.master.data.updates.addBuildset(
             waited_for=False,
             builderids=builder_ids,
             sourcestamps=[
@@ -111,7 +115,7 @@ class Tests(RunFakeMasterTestCase):
         # The worker fails to substantiate.
         controller.start_instance(True)
 
-        controller.connect_worker()
+        yield controller.connect_worker()
 
         self.assertEqual(len(started_builds), 1)
         yield controller.auto_stop(True)
@@ -138,19 +142,19 @@ class Tests(RunFakeMasterTestCase):
             'protocols': {'null': {}},
             'multiMaster': True,
         }
-        master = yield self.getMaster(config_dict)
+        yield self.setup_master(config_dict)
         builder_ids = [
-            (yield master.data.updates.findBuilderId('testy-1')),
-            (yield master.data.updates.findBuilderId('testy-2')),
+            (yield self.master.data.updates.findBuilderId('testy-1')),
+            (yield self.master.data.updates.findBuilderId('testy-2')),
         ]
 
         started_builds = []
-        yield master.mq.startConsuming(
+        yield self.master.mq.startConsuming(
             lambda key, build: started_builds.append(build),
             ('builds', None, 'new'))
 
         # Trigger a buildrequest
-        bsid, brids = yield master.data.updates.addBuildset(
+        bsid, brids = yield self.master.data.updates.addBuildset(
             waited_for=False,
             builderids=builder_ids,
             sourcestamps=[
@@ -182,7 +186,7 @@ class Tests(RunFakeMasterTestCase):
             'multiMaster': True,
         }
 
-        yield self.getMaster(config_dict)
+        yield self.setup_master(config_dict)
 
         self.assertIs(worker.machine, machine)
 
@@ -202,7 +206,7 @@ class Tests(RunFakeMasterTestCase):
             # Disable checks about missing scheduler.
             'multiMaster': True,
         }
-        yield self.getMaster(config_dict)
+        yield self.setup_master(config_dict)
 
         config_dict['builders'] += [
             BuilderConfig(name="builder2",
@@ -212,7 +216,72 @@ class Tests(RunFakeMasterTestCase):
         config_dict['workers'] = [self.createLocalWorker('local1', max_builds=2)]
 
         # reconfig should succeed
-        yield self.reconfigMaster(config_dict)
+        yield self.reconfig_master(config_dict)
+
+    @defer.inlineCallbacks
+    def test_step_with_worker_build_props_during_worker_disconnect(self):
+        """
+        We need to handle worker disconnection and steps with worker build properties gracefully
+        """
+        controller = WorkerController(self, 'local')
+
+        stepcontroller = BuildStepController()
+
+        config_dict = {
+            'builders': [
+                BuilderConfig(name="builder", workernames=['local'],
+                              properties={'worker': Interpolate("%(worker:numcpus)s")},
+                              factory=BuildFactory([stepcontroller.step])),
+            ],
+            'workers': [controller.worker],
+            'protocols': {'null': {}},
+            'multiMaster': True,
+        }
+
+        yield self.setup_master(config_dict)
+
+        builder_id = yield self.master.data.updates.findBuilderId('builder')
+        yield self.create_build_request([builder_id])
+
+        yield controller.connect_worker()
+        self.reactor.advance(1)
+        yield controller.disconnect_worker()
+        self.reactor.advance(1)
+        yield self.assertBuildResults(1, RETRY)
+
+    @defer.inlineCallbacks
+    def test_worker_os_release_info_roundtrip(self):
+        """
+        Checks if we can successfully get information about the platform the worker is running on.
+        This is very similar to test_worker_comm.TestWorkerComm.test_worker_info, except that
+        we check details such as whether the information is passed in correct encoding.
+        """
+        worker = self.createLocalWorker('local1')
+
+        config_dict = {
+            'builders': [
+                BuilderConfig(name="builder1",
+                              workernames=['local1'],
+                              factory=BuildFactory()),
+            ],
+            'workers': [worker],
+            'protocols': {'null': {}},
+            # Disable checks about missing scheduler.
+            'multiMaster': True,
+        }
+        yield self.setup_master(config_dict)
+
+        props = worker.info
+
+        from buildbot_worker.base import BotBase
+
+        expected_props_dict = {}
+        BotBase._read_os_release(BotBase.os_release_file, expected_props_dict)
+
+        for key, value in expected_props_dict.items():
+            self.assertTrue(isinstance(key, str))
+            self.assertTrue(isinstance(value, str))
+            self.assertEqual(props.getProperty(key), value)
 
     if RemoteWorker is None:
         skip = "buildbot-worker package is not installed"

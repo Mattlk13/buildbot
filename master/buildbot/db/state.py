@@ -110,14 +110,13 @@ class StateConnectorComponent(base.DBConnectorComponent):
 
         if not row:
             if default is self.Thunk:
-                raise KeyError("no such state value '%s' for object %d" %
-                               (name, objectid))
+                raise KeyError("no such state value '{}' for object {}".format(name, objectid))
             return default
         try:
             return json.loads(row.value_json)
-        except ValueError:
-            raise TypeError("JSON error loading state value '%s' for %d" %
-                            (name, objectid))
+        except ValueError as e:
+            raise TypeError("JSON error loading state value '{}' for {}".format(
+                name, objectid)) from e
 
     # returns a Deferred that returns a value
     def setState(self, objectid, name, value):
@@ -130,8 +129,8 @@ class StateConnectorComponent(base.DBConnectorComponent):
 
         try:
             value_json = json.dumps(value)
-        except (TypeError, ValueError):
-            raise TypeError("Error encoding JSON for %r" % (value,))
+        except (TypeError, ValueError) as e:
+            raise TypeError("Error encoding JSON for %r" % (value,)) from e
 
         name = self.ensureLength(object_state_tbl.c.name, name)
 
@@ -178,8 +177,8 @@ class StateConnectorComponent(base.DBConnectorComponent):
                 res = thd_create_callback()
                 try:
                     value_json = json.dumps(res)
-                except (TypeError, ValueError):
-                    raise TypeError("Error encoding JSON for %r" % (res,))
+                except (TypeError, ValueError) as e:
+                    raise TypeError("Error encoding JSON for %r" % (res,)) from e
                 self._test_timing_hook(conn)
                 try:
                     conn.execute(object_state_tbl.insert(),

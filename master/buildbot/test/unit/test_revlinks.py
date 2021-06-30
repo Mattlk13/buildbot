@@ -15,6 +15,7 @@
 
 from twisted.trial import unittest
 
+from buildbot.revlinks import BitbucketRevlink
 from buildbot.revlinks import GithubRevlink
 from buildbot.revlinks import GitwebMatch
 from buildbot.revlinks import RevlinkMatch
@@ -46,19 +47,22 @@ class TestGithubRevlink(unittest.TestCase):
 
 class TestSourceforgeGitRevlink(unittest.TestCase):
     revision = 'b99c89a2842d386accea8072ae5bb6e24aa7cf29'
-    url = 'http://gemrb.git.sourceforge.net/git/gitweb.cgi?p=gemrb/gemrb;a=commit;h=b99c89a2842d386accea8072ae5bb6e24aa7cf29'
+    url = 'http://gemrb.git.sourceforge.net/git/gitweb.cgi?p=gemrb/gemrb;a=commit;h=b99c89a2842d386accea8072ae5bb6e24aa7cf29'  # noqa pylint: disable=line-too-long
 
     def testGIT(self):
-        self.assertEqual(SourceforgeGitRevlink(self.revision, 'git://gemrb.git.sourceforge.net/gitroot/gemrb/gemrb'),
-                         self.url)
+        url = SourceforgeGitRevlink(self.revision,
+                                    'git://gemrb.git.sourceforge.net/gitroot/gemrb/gemrb')
+        self.assertEqual(url, self.url)
 
     def testSSH(self):
-        self.assertEqual(SourceforgeGitRevlink(self.revision, 'somebody@gemrb.git.sourceforge.net:gitroot/gemrb/gemrb'),
-                         self.url)
+        url = SourceforgeGitRevlink(self.revision,
+                                    'somebody@gemrb.git.sourceforge.net:gitroot/gemrb/gemrb')
+        self.assertEqual(url, self.url)
 
     def testSSHuri(self):
-        self.assertEqual(SourceforgeGitRevlink(self.revision, 'ssh://somebody@gemrb.git.sourceforge.net/gitroot/gemrb/gemrb'),
-                         self.url)
+        url = SourceforgeGitRevlink(self.revision,
+                                    'ssh://somebody@gemrb.git.sourceforge.net/gitroot/gemrb/gemrb')
+        self.assertEqual(url, self.url)
 
 
 class TestSourceforgeGitRevlink_AlluraPlatform(unittest.TestCase):
@@ -66,12 +70,14 @@ class TestSourceforgeGitRevlink_AlluraPlatform(unittest.TestCase):
     url = 'https://sourceforge.net/p/klusters/klusters/ci/6f9b1470bae497c6ce47e4cf8c9195d864d2ba2f/'
 
     def testGIT(self):
-        self.assertEqual(SourceforgeGitRevlink_AlluraPlatform(self.revision, 'git://git.code.sf.net/p/klusters/klusters'),
-                         self.url)
+        url = SourceforgeGitRevlink_AlluraPlatform(self.revision,
+                                                   'git://git.code.sf.net/p/klusters/klusters')
+        self.assertEqual(url, self.url)
 
     def testSSHuri(self):
-        self.assertEqual(SourceforgeGitRevlink_AlluraPlatform(self.revision, 'ssh://somebody@git.code.sf.net/p/klusters/klusters'),
-                         self.url)
+        url = SourceforgeGitRevlink_AlluraPlatform(
+                self.revision, 'ssh://somebody@git.code.sf.net/p/klusters/klusters')
+        self.assertEqual(url, self.url)
 
 
 class TestRevlinkMatch(unittest.TestCase):
@@ -81,7 +87,7 @@ class TestRevlinkMatch(unittest.TestCase):
         matcher = RevlinkMatch(['git://notmuchmail.org/git/(.*)'],
                                r'http://git.notmuchmail.org/git/\1/commit/%s')
         self.assertEqual(matcher(revision, 'git://notmuchmail.org/git/notmuch'),
-                         'http://git.notmuchmail.org/git/notmuch/commit/f717d2ece1836c863f9cc02abd1ff2539307cd1d')
+                         'http://git.notmuchmail.org/git/notmuch/commit/f717d2ece1836c863f9cc02abd1ff2539307cd1d')  # noqa pylint: disable=line-too-long
 
     def testSingleString(self):
         revision = 'rev'
@@ -106,7 +112,22 @@ class TestGitwebMatch(unittest.TestCase):
         matcher = GitwebMatch(
             'git://orgmode.org/(?P<repo>.*)', 'http://orgmode.org/w/')
         self.assertEqual(matcher(revision, 'git://orgmode.org/org-mode.git'),
-                         'http://orgmode.org/w/?p=org-mode.git;a=commit;h=490d6ace10e0cfe74bab21c59e4b7bd6aa3c59b8')
+                         'http://orgmode.org/w/?p=org-mode.git;a=commit;h=490d6ace10e0cfe74bab21c59e4b7bd6aa3c59b8')  # noqa pylint: disable=line-too-long
+
+
+class TestBitbucketRevlink(unittest.TestCase):
+    revision = '4d4284cf4fb49ce82fefb6cbac8e462073c5f106'
+    url = 'https://bitbucket.org/fakeproj/fakerepo/commits/4d4284cf4fb49ce82fefb6cbac8e462073c5f106'
+
+    def testHTTPS(self):
+        self.assertEqual(BitbucketRevlink(self.revision,
+                         'https://fakeuser@bitbucket.org/fakeproj/fakerepo.git'),
+                         self.url)
+
+    def testSSH(self):
+        self.assertEqual(BitbucketRevlink(self.revision,
+                         'git@bitbucket.org:fakeproj/fakerepo.git'),
+                         self.url)
 
 
 class TestDefaultRevlinkMultiPlexer(unittest.TestCase):
@@ -116,6 +137,9 @@ class TestDefaultRevlinkMultiPlexer(unittest.TestCase):
         # GithubRevlink
         self.assertTrue(default_revlink_matcher(
             self.revision, 'https://github.com/buildbot/buildbot.git'))
+        # BitbucketRevlink
+        self.assertTrue(default_revlink_matcher(
+            self.revision, 'git@bitbucket.org:fakeproj/fakerepo.git'))
         # SourceforgeGitRevlink
         self.assertTrue(default_revlink_matcher(
             self.revision, 'git://gemrb.git.sourceforge.net/gitroot/gemrb/gemrb'))

@@ -21,7 +21,7 @@ from buildbot.process.buildstep import FAILURE
 from buildbot.process.buildstep import SUCCESS
 from buildbot.process.buildstep import BuildStep
 
-# use the 'requests' lib: http://python-requests.org
+# use the 'requests' lib: https://requests.readthedocs.io/en/master/
 try:
     import txrequests
     import requests
@@ -57,6 +57,10 @@ def closeSession():
         _session = None
 
 
+def _headerSet(headers):
+    return frozenset(map(lambda x: x.casefold(), headers))
+
+
 class HTTPStep(BuildStep):
 
     name = 'HTTPStep'
@@ -69,28 +73,29 @@ class HTTPStep(BuildStep):
     renderables = requestsParams + ["method", "url"]
     session = None
 
-    def __init__(self, url, method, **kwargs):
+    def __init__(self, url, method,
+                 hide_request_headers=None, hide_response_headers=None,
+                 **kwargs):
         if txrequests is None:
             config.error(
                 "Need to install txrequest to use this step:\n\n pip install txrequests")
 
         if method not in ('POST', 'GET', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'):
-            config.error("Wrong method given: '%s' is not known" % method)
+            config.error("Wrong method given: '{}' is not known".format(method))
 
         self.method = method
         self.url = url
 
-        for param in HTTPStep.requestsParams:
+        self.hide_request_headers = _headerSet(hide_request_headers or [])
+        self.hide_response_headers = _headerSet(hide_response_headers or [])
+
+        for param in self.requestsParams:
             setattr(self, param, kwargs.pop(param, None))
 
         super().__init__(**kwargs)
 
-    def start(self):
-        d = self.doRequest()
-        d.addErrback(self.failed)
-
     @defer.inlineCallbacks
-    def doRequest(self):
+    def run(self):
         # create a new session if it doesn't exist
         self.session = getSession()
 
@@ -104,73 +109,73 @@ class HTTPStep(BuildStep):
             if value is not None:
                 requestkwargs[param] = value
 
-        log = self.addLog('log')
+        log = yield self.addLog('log')
 
         # known methods already tested in __init__
 
-        log.addHeader('Performing %s request to %s\n' %
-                      (self.method, self.url))
+        yield log.addHeader('Performing {} request to {}\n'.format(self.method, self.url))
         if self.params:
-            log.addHeader('Parameters:\n')
-            params = requestkwargs.get("params", {})
-            if params:
-                params = sorted(params.items(), key=lambda x: x[0])
-                requestkwargs['params'] = params
+            yield log.addHeader('Parameters:\n')
+            params = sorted(self.params.items(), key=lambda x: x[0])
+            requestkwargs['params'] = params
             for k, v in params:
-                log.addHeader('\t%s: %s\n' % (k, v))
+                yield log.addHeader('\t{}: {}\n'.format(k, v))
         data = requestkwargs.get("data", None)
         if data:
-            log.addHeader('Data:\n')
+            yield log.addHeader('Data:\n')
             if isinstance(data, dict):
                 for k, v in data.items():
-                    log.addHeader('\t%s: %s\n' % (k, v))
+                    yield log.addHeader('\t{}: {}\n'.format(k, v))
             else:
-                log.addHeader('\t%s\n' % data)
+                yield log.addHeader('\t{}\n'.format(data))
 
         try:
             r = yield self.session.request(**requestkwargs)
         except requests.exceptions.ConnectionError as e:
-            log.addStderr(
-                'An exception occurred while performing the request: %s' % e)
-            self.finished(FAILURE)
-            return
+            yield log.addStderr('An exception occurred while performing the request: {}'.format(e))
+            return FAILURE
 
         if r.history:
-            log.addStdout('\nRedirected %d times:\n\n' % len(r.history))
+            yield log.addStdout('\nRedirected %d times:\n\n' % len(r.history))
             for rr in r.history:
-                self.log_response(rr)
-                log.addStdout('=' * 60 + '\n')
+                yield self.log_response(log, rr)
+                yield log.addStdout('=' * 60 + '\n')
 
-        self.log_response(r)
+        yield self.log_response(log, r)
 
-        log.finish()
+        yield log.finish()
 
         self.descriptionDone = ["Status code: %d" % r.status_code]
         if (r.status_code < 400):
-            self.finished(SUCCESS)
+            return SUCCESS
         else:
-            self.finished(FAILURE)
+            return FAILURE
 
-    def log_response(self, response):
-        log = self.getLog('log')
+    @defer.inlineCallbacks
+    def log_response(self, log, response):
 
-        log.addHeader('Request Header:\n')
+        yield log.addHeader('Request Headers:\n')
         for k, v in response.request.headers.items():
-            log.addHeader('\t%s: %s\n' % (k, v))
+            if k.casefold() in self.hide_request_headers:
+                v = '<HIDDEN>'
+            yield log.addHeader('\t{}: {}\n'.format(k, v))
 
-        log.addStdout('URL: %s\n' % response.url)
+        yield log.addStdout('URL: {}\n'.format(response.url))
 
         if response.status_code == requests.codes.ok:
-            log.addStdout('Status: %s\n' % response.status_code)
+            yield log.addStdout('Status: {}\n'.format(response.status_code))
         else:
-            log.addStderr('Status: %s\n' % response.status_code)
+            yield log.addStderr('Status: {}\n'.format(response.status_code))
 
-        log.addHeader('Response Header:\n')
+        yield log.addHeader('Response Headers:\n')
         for k, v in response.headers.items():
-            log.addHeader('\t%s: %s\n' % (k, v))
+            if k.casefold() in self.hide_response_headers:
+                v = '<HIDDEN>'
+            yield log.addHeader('\t{}: {}\n'.format(k, v))
 
-        log.addStdout(' ------ Content ------\n%s' % response.text)
-        self.addLog('content').addStdout(response.text)
+        yield log.addStdout(' ------ Content ------\n{}'.format(response.text))
+        content_log = yield self.addLog('content')
+        yield content_log.addStdout(response.text)
 
 
 class POST(HTTPStep):

@@ -35,8 +35,10 @@ from buildbot.reporters.words import UsageError
 from buildbot.reporters.words import WebhookResource
 from buildbot.schedulers.forcesched import CollectedValidationError
 from buildbot.schedulers.forcesched import ForceScheduler
+from buildbot.util import Notifier
 from buildbot.util import asyncSleep
 from buildbot.util import bytes2unicode
+from buildbot.util import epoch2datetime
 from buildbot.util import httpclientservice
 from buildbot.util import service
 from buildbot.util import unicode2bytes
@@ -49,13 +51,14 @@ class TelegramChannel(Channel):
         super().__init__(bot, channel['id'])
         self.chat_info = channel
 
+    @defer.inlineCallbacks
     def list_notified_events(self):
         if self.notify_events:
-            self.send("The following events are being notified:\n{}"
-                      .format("\n".join(sorted(
-                          "🔔 **{}**".format(n) for n in self.notify_events))))
+            yield self.send("The following events are being notified:\n{}"
+                            .format("\n".join(sorted(
+                                    "🔔 **{}**".format(n) for n in self.notify_events))))
         else:
-            self.send("🔕 No events are being notified.")
+            yield self.send("🔕 No events are being notified.")
 
 
 def collect_fields(fields):
@@ -169,6 +172,7 @@ class TelegramContact(Contact):
                 self.send('\n'.join(response))
         else:
             return super().command_COMMANDS(args)
+        return None
 
     @defer.inlineCallbacks
     def command_GETID(self, args, **kwargs):
@@ -177,8 +181,10 @@ class TelegramContact(Contact):
             self.send("Your ID is {}.".format(self.user_id))
         else:
             yield self.send("{}, your ID is {}.".format(self.user_name, self.user_id))
-            self.send("This {} ID is {}.".format(self.channel.chat_info.get('type', "group"), self.chat_id))
-    command_GETID.usage = "getid - get user and chat ID that can be put in the master configuration file"
+            self.send("This {} ID is {}.".format(self.channel.chat_info.get('type', "group"),
+                                                 self.chat_id))
+    command_GETID.usage = "getid - get user and chat ID that can be put in the master " \
+                          "configuration file"
 
     @defer.inlineCallbacks
     @Contact.overrideCommand
@@ -209,7 +215,8 @@ class TelegramContact(Contact):
             pass
 
         if not args:
-            raise UsageError("Try '" + self.bot.commandPrefix + "list [all|N] builders|workers|changes'.")
+            raise UsageError("Try '" + self.bot.commandPrefix +
+                             "list [all|N] builders|workers|changes'.")
 
         if args[0] == 'builders':
             bdicts = yield self.bot.getAllBuilders()
@@ -241,27 +248,29 @@ class TelegramContact(Contact):
             wait_message = yield self.send("⏳ Getting your changes...")
 
             if all:
-                changes = yield self.master.db.changes.getChanges()
+                changes = yield self.master.data.get(('changes',))
                 self.bot.delete_message(self.channel.id, wait_message['message_id'])
                 num = len(changes)
                 if num > 50:
                     keyboard = [
-                        [self.query_button("‼ Yes, flood me with all of them!", '/list {} changes'.format(num))],
+                        [self.query_button("‼ Yes, flood me with all of them!",
+                                           '/list {} changes'.format(num))],
                         [self.query_button("✅ No, just show last 50", '/list 50 changes')]
                     ]
-                    self.send("I found {} changes. Do you really want me to list them all?".format(num),
+                    self.send("I found {} changes. Do you really want me "
+                              "to list them all?".format(num),
                               reply_markup={'inline_keyboard': keyboard})
                     return
 
             else:
-                changes = yield self.master.db.changes.getRecentChanges(num)
+                changes = yield self.master.data.get(('changes',), order=['-changeid'], limit=num)
                 self.bot.delete_message(self.channel.id, wait_message['message_id'])
 
             response = ["I found the following recent **changes**:\n"]
 
             for change in reversed(changes):
                 change['comment'] = change['comments'].split('\n')[0]
-                change['date'] = change['when_timestamp'].strftime('%Y-%m-%d %H:%M')
+                change['date'] = epoch2datetime(change['when_timestamp']).strftime('%Y-%m-%d %H:%M')
                 response.append(
                     "[{comment}]({revlink})\n"
                     "_Author_: {author}\n"
@@ -397,6 +406,7 @@ class TelegramContact(Contact):
             text = ""
         self.send(text + "What do you want to do?",
                   reply_markup={'inline_keyboard': keyboard})
+        return None
 
     @defer.inlineCallbacks
     def command_FORCE(self, args, tquery=None, partial=None, **kwargs):
@@ -457,20 +467,21 @@ class TelegramContact(Contact):
         if task == 'ask':
             try:
                 what = argv.pop(0)
-            except IndexError:
-                raise UsageError("Try '/force' and follow the instructions")
+            except IndexError as e:
+                raise UsageError("Try '/force' and follow the instructions") from e
         else:
             what = None  # silence PyCharm warnings
 
         bldr = argv.pop(0)
         if bldr not in scheduler['builder_names']:
-            raise UsageError("Try '/force' and follow the instructions (`{}` not configured for _{}_ scheduler)"
-                             .format(bldr, scheduler['label']))
+            raise UsageError(("Try '/force' and follow the instructions "
+                              "(`{}` not configured for _{}_ scheduler)"
+                              ).format(bldr, scheduler['label']))
 
         try:
             params = dict(arg.split('=', 1) for arg in argv)
-        except ValueError as err:
-            raise UsageError("Try '/force' and follow the instructions ({})".format(err))
+        except ValueError as e:
+            raise UsageError("Try '/force' and follow the instructions ({})".format(e)) from e
 
         all_fields = list(collect_fields(scheduler['all_fields']))
         required_params = [f['fullName'] for f in all_fields
@@ -501,14 +512,14 @@ class TelegramContact(Contact):
                         yield scheduler.force(builderid=builder['builderid'],
                                               owner=self.describeUser(),
                                               **params)
-                    except CollectedValidationError as err:
-                        raise ValueError(err.errors)
+                    except CollectedValidationError as e:
+                        raise ValueError(e.errors) from e
                     else:
                         self.send("Force build successfully requested.")
                     return
 
-            except (IndexError, ValueError) as err:
-                raise UsageError("Try '/force' and follow the instructions ({})".format(err))
+            except (IndexError, ValueError) as e:
+                raise UsageError("Try '/force' and follow the instructions ({})".format(e)) from e
 
         if task == 'config':
 
@@ -597,12 +608,13 @@ class TelegramStatusBot(StatusBot):
 
         self.nickname = None
 
+    @defer.inlineCallbacks
     def startService(self):
-        super().startService()
+        yield super().startService()
         for c in self.chat_ids:
             channel = self.getChannel(c)
             channel.add_notification_events(self.notify_events)
-        self.loadState()
+        yield self.loadState()
 
     results_emoji = {
         SUCCESS: ' ✅',
@@ -656,6 +668,7 @@ class TelegramStatusBot(StatusBot):
                 new_channel.setServiceParent(self)
             return new_channel
 
+    @defer.inlineCallbacks
     def process_update(self, update):
         data = {}
 
@@ -664,7 +677,7 @@ class TelegramStatusBot(StatusBot):
             query = update.get('callback_query')
             if query is None:
                 self.log('No message in Telegram update object')
-                return defer.succeed('no message')
+                return 'no message'
             original_message = query.get('message', {})
             data = query.get('data', 0)
             try:
@@ -705,22 +718,22 @@ class TelegramStatusBot(StatusBot):
         user = message.get('from')
         if user is None:
             self.log('No user in incoming message')
-            return defer.succeed('no user')
+            return 'no user'
 
         text = message.get('text')
         if not text:
-            return defer.succeed('no text in the message')
+            return 'no text in the message'
 
         contact = self.getContact(user=user, channel=chat)
         data['tmessage'] = message
         template, contact.template = contact.template, None
         if text.startswith(self.commandPrefix):
-            d = contact.handleMessage(text, **data)
+            result = yield contact.handleMessage(text, **data)
         else:
             if template:
                 text = template.format(shlex.quote(text))
-            d = contact.handleMessage(text, **data)
-        return d
+            result = yield contact.handleMessage(text, **data)
+        return result
 
     @defer.inlineCallbacks
     def post(self, path, **kwargs):
@@ -732,7 +745,8 @@ class TelegramStatusBot(StatusBot):
                 # just for tests
                 raise err
             except Exception as err:
-                msg = "ERROR: problem sending Telegram request {} (will try again): {}".format(path, err)
+                msg = "ERROR: problem sending Telegram request {} (will try again): {}".format(path,
+                                                                                               err)
                 if logme:
                     self.log(msg)
                     logme = False
@@ -825,12 +839,13 @@ class TelegramWebhookBot(TelegramStatusBot):
         self.webhook = WebhookResource('telegram' + token)
         self.webhook.setServiceParent(self)
 
+    @defer.inlineCallbacks
     def startService(self):
-        super().startService()
+        yield super().startService()
         url = bytes2unicode(self.master.config.buildbotURL)
         if not url.endswith('/'):
             url += '/'
-        self.set_webhook(url + self.webhook.path, self._certificate)
+        yield self.set_webhook(url + self.webhook.path, self._certificate)
 
     def process_webhook(self, request):
         update = self.get_update(request)
@@ -849,15 +864,16 @@ class TelegramWebhookBot(TelegramStatusBot):
                              .format(content_type))
         return update
 
+    @defer.inlineCallbacks
     def set_webhook(self, url, certificate=None):
         if not certificate:
             self.log("Setting up webhook to: {}".format(url))
-            self.post('/setWebhook', json=dict(url=url))
+            yield self.post('/setWebhook', json=dict(url=url))
         else:
             self.log("Setting up webhook to: {} (custom certificate)".format(url))
             certificate = io.BytesIO(unicode2bytes(certificate))
-            self.post('/setWebhook', data=dict(url=url),
-                      files=dict(certificate=certificate))
+            yield self.post('/setWebhook', data=dict(url=url),
+                            files=dict(certificate=certificate))
 
 
 class TelegramPollingBot(TelegramStatusBot):
@@ -865,11 +881,19 @@ class TelegramPollingBot(TelegramStatusBot):
 
     def __init__(self, *args, poll_timeout=120, **kwargs):
         super().__init__(*args, **kwargs)
+        self._polling_finished_notifier = Notifier()
         self.poll_timeout = poll_timeout
 
     def startService(self):
         super().startService()
+        self._polling_continue = True
         self.do_polling()
+
+    @defer.inlineCallbacks
+    def stopService(self):
+        self._polling_continue = False
+        yield self._polling_finished_notifier.wait()
+        yield super().stopService()
 
     @defer.inlineCallbacks
     def do_polling(self):
@@ -877,7 +901,7 @@ class TelegramPollingBot(TelegramStatusBot):
         offset = 0
         kwargs = {'json': {'timeout': self.poll_timeout}}
         logme = True
-        while self.running:
+        while self._polling_continue:
             if offset:
                 kwargs['json']['offset'] = offset
             try:
@@ -891,7 +915,8 @@ class TelegramPollingBot(TelegramStatusBot):
             except AssertionError as err:
                 raise err
             except Exception as err:
-                msg = "ERROR: cannot send Telegram request /getUpdates (will try again): {}".format(err)
+                msg = ("ERROR: cannot send Telegram request /getUpdates (will try again): {}"
+                       ).format(err)
                 if logme:
                     self.log(msg)
                     logme = False
@@ -901,7 +926,9 @@ class TelegramPollingBot(TelegramStatusBot):
                 if updates:
                     offset = max(update['update_id'] for update in updates) + 1
                     for update in updates:
-                        self.process_update(update)
+                        yield self.process_update(update)
+
+        self._polling_finished_notifier.notify(None)
 
 
 class TelegramBot(service.BuildbotService):
@@ -992,4 +1019,4 @@ class TelegramBot(service.BuildbotService):
             if self.bot.nickname is None:
                 raise RuntimeError("No bot username specified and I cannot get it from Telegram")
 
-        self.bot.setServiceParent(self)
+        yield self.bot.setServiceParent(self)

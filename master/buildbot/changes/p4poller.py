@@ -26,13 +26,13 @@ import dateutil.tz
 from twisted.internet import defer
 from twisted.internet import protocol
 from twisted.internet import reactor
-from twisted.internet import utils
 from twisted.python import log
 
 from buildbot import config
 from buildbot import util
 from buildbot.changes import base
 from buildbot.util import bytes2unicode
+from buildbot.util import runprocess
 
 debug_logging = False
 
@@ -50,33 +50,32 @@ class TicketLoginProtocol(protocol.ProcessProtocol):
 
     def __init__(self, stdin, p4base):
         self.deferred = defer.Deferred()
-        self.stdin = stdin
-        self.stdout = ''
-        self.stderr = ''
+        self.stdin = stdin.encode('ascii')
+        self.stdout = b''
+        self.stderr = b''
         self.p4base = p4base
 
     def connectionMade(self):
         if self.stdin:
             if debug_logging:
-                log.msg("P4Poller: entering password for %s: %s" %
-                        (self.p4base, self.stdin))
+                log.msg("P4Poller: entering password for {}: {}".format(self.p4base, self.stdin))
             self.transport.write(self.stdin)
         self.transport.closeStdin()
 
     def processEnded(self, reason):
         if debug_logging:
-            log.msg("P4Poller: login process finished for %s: %s" %
-                    (self.p4base, reason.value.exitCode))
+            log.msg("P4Poller: login process finished for {}: {}".format(self.p4base,
+                                                                         reason.value.exitCode))
         self.deferred.callback(reason.value.exitCode)
 
     def outReceived(self, data):
         if debug_logging:
-            log.msg("P4Poller: login stdout for %s: %s" % (self.p4base, data))
+            log.msg("P4Poller: login stdout for {}: {}".format(self.p4base, data))
         self.stdout += data
 
     def errReceived(self, data):
         if debug_logging:
-            log.msg("P4Poller: login stderr for %s: %s" % (self.p4base, data))
+            log.msg("P4Poller: login stderr for {}: {}".format(self.p4base, data))
         self.stderr += data
 
 
@@ -97,12 +96,11 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
     """This source will poll a perforce repository for changes and submit
     them to the change master."""
 
-    compare_attrs = ("p4port", "p4user", "p4passwd", "p4base",
-                     "p4bin", "pollInterval", "pollAtLaunch",
-                     "server_tz")
+    compare_attrs = ("p4port", "p4user", "p4passwd", "p4base", "p4bin", "pollInterval",
+                     "pollAtLaunch", "server_tz", "pollRandomDelayMin", "pollRandomDelayMax")
 
     env_vars = ["P4CLIENT", "P4PORT", "P4PASSWD", "P4USER",
-                "P4CHARSET", "PATH", "P4CONFIG"]
+                "P4CHARSET", "P4CONFIG", "P4TICKETS", "PATH", "HOME"]
 
     changes_line_re = re.compile(
         r"Change (?P<num>\d+) on \S+ by \S+@\S+ '.*'$")
@@ -115,24 +113,23 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
     last_change = None
     loop = None
 
-    def __init__(self, p4port=None, p4user=None, p4passwd=None,
-                 p4base='//', p4bin='p4',
-                 split_file=lambda branchfile: (None, branchfile),
-                 pollInterval=60 * 10, histmax=None, pollinterval=-2,
-                 encoding='utf8', project=None, name=None,
-                 use_tickets=False, ticket_login_interval=60 * 60 * 24,
-                 server_tz=None, pollAtLaunch=False, revlink=lambda branch, revision: (''), resolvewho=lambda who: (who)):
+    def __init__(self, p4port=None, p4user=None, p4passwd=None, p4base="//", p4bin="p4",
+                 split_file=lambda branchfile: (None, branchfile), pollInterval=60 * 10,
+                 histmax=None, pollinterval=-2, encoding="utf8", project=None, name=None,
+                 use_tickets=False, ticket_login_interval=60 * 60 * 24, server_tz=None,
+                 pollAtLaunch=False, revlink=lambda branch, revision: (""),
+                 resolvewho=lambda who: (who), pollRandomDelayMin=0, pollRandomDelayMax=0):
 
         # for backward compatibility; the parameter used to be spelled with 'i'
         if pollinterval != -2:
             pollInterval = pollinterval
 
         if name is None:
-            name = "P4Source:%s:%s" % (p4port, p4base)
+            name = "P4Source:{}:{}".format(p4port, p4base)
 
-        super().__init__(name=name,
-                         pollInterval=pollInterval,
-                         pollAtLaunch=pollAtLaunch)
+        super().__init__(name=name, pollInterval=pollInterval, pollAtLaunch=pollAtLaunch,
+                         pollRandomDelayMin=pollRandomDelayMin,
+                         pollRandomDelayMax=pollRandomDelayMax)
 
         if project is None:
             project = ''
@@ -163,25 +160,29 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
         self.resolvewho_callable = resolvewho
         self.server_tz = dateutil.tz.gettz(server_tz) if server_tz else None
         if server_tz is not None and self.server_tz is None:
-            raise P4PollerError("Failed to get timezone from server_tz string '{}'".format(server_tz))
+            raise P4PollerError(("Failed to get timezone from server_tz string '{}'"
+                                 ).format(server_tz))
 
-        self._ticket_passwd = None
         self._ticket_login_counter = 0
 
     def describe(self):
-        return "p4source %s %s" % (self.p4port, self.p4base)
+        return "p4source {} {}".format(self.p4port, self.p4base)
 
     def poll(self):
         d = self._poll()
-        d.addErrback(log.err, 'P4 poll failed on %s, %s' %
-                     (self.p4port, self.p4base))
+        d.addErrback(log.err, 'P4 poll failed on {}, {}'.format(self.p4port, self.p4base))
         return d
 
+    @defer.inlineCallbacks
     def _get_process_output(self, args):
         env = {e: os.environ.get(e)
                for e in self.env_vars if os.environ.get(e)}
-        d = utils.getProcessOutput(self.p4bin, args, env)
-        return d
+        res, out = yield runprocess.run_process(self.master.reactor, [self.p4bin] + args,
+                                                env=env, collect_stderr=False,
+                                                stderr_is_error=True)
+        if res != 0:
+            raise P4PollerError('Failed to run {}'.format(self.p4bin))
+        return out
 
     def _acquireTicket(self, protocol):
         command = [self.p4bin, ]
@@ -189,21 +190,10 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
             command.extend(['-p', self.p4port])
         if self.p4user:
             command.extend(['-u', self.p4user])
-        command.extend(['login', '-p'])
+        command.append('login')
         command = [c.encode('utf-8') for c in command]
 
         reactor.spawnProcess(protocol, self.p4bin, command, env=os.environ)
-
-    def _parseTicketPassword(self, text):
-        lines = text.splitlines()
-        if len(lines) < 2:
-            return None
-        return lines[-1].strip()
-
-    def _getPasswd(self):
-        if self.use_tickets:
-            return self._ticket_passwd
-        return self.p4passwd
 
     @defer.inlineCallbacks
     def _poll(self):
@@ -211,36 +201,25 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
             self._ticket_login_counter -= 1
             if self._ticket_login_counter <= 0:
                 # Re-acquire the ticket and reset the counter.
-                log.msg("P4Poller: (re)acquiring P4 ticket for %s..." %
-                        self.p4base)
+                log.msg("P4Poller: (re)acquiring P4 ticket for {}...".format(self.p4base))
                 protocol = TicketLoginProtocol(
                     self.p4passwd + "\n", self.p4base)
                 self._acquireTicket(protocol)
                 yield protocol.deferred
 
-                self._ticket_passwd = self._parseTicketPassword(
-                    protocol.stdout)
-                self._ticket_login_counter = max(
-                    self.ticket_login_interval / self.pollInterval, 1)
-                if debug_logging:
-                    log.msg("P4Poller: got ticket password: %s" %
-                            self._ticket_passwd)
-                    log.msg(
-                        "P4Poller: next ticket acquisition in %d polls" % self._ticket_login_counter)
-
         args = []
         if self.p4port:
             args.extend(['-p', self.p4port])
-        if self.p4user:
-            args.extend(['-u', self.p4user])
-        if self.p4passwd:
-            args.extend(['-P', self._getPasswd()])
+        if not self.use_tickets:
+            if self.p4user:
+                args.extend(['-u', self.p4user])
+            if self.p4passwd:
+                args.extend(['-P', self.p4passwd])
         args.extend(['changes'])
         if self.last_change is not None:
-            args.extend(
-                ['%s...@%d,#head' % (self.p4base, self.last_change + 1)])
+            args.extend(['{}...@{},#head'.format(self.p4base, self.last_change + 1)])
         else:
-            args.extend(['-m', '1', '%s...' % (self.p4base,)])
+            args.extend(['-m', '1', '{}...'.format(self.p4base,)])
 
         result = yield self._get_process_output(args)
         # decode the result from its designated encoding
@@ -276,10 +255,11 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
             args = []
             if self.p4port:
                 args.extend(['-p', self.p4port])
-            if self.p4user:
-                args.extend(['-u', self.p4user])
-            if self.p4passwd:
-                args.extend(['-P', self._getPasswd()])
+            if not self.use_tickets:
+                if self.p4user:
+                    args.extend(['-u', self.p4user])
+                if self.p4passwd:
+                    args.extend(['-P', self.p4passwd])
             args.extend(['describe', '-s', str(num)])
             result = yield self._get_process_output(args)
 
@@ -287,11 +267,9 @@ class P4Source(base.PollingChangeSource, util.ComparableMixin):
             try:
                 result = bytes2unicode(result, self.encoding)
             except UnicodeError as ex:
-                log.msg(
-                    "P4Poller: couldn't decode changelist description: %s" % ex.encoding)
-                log.msg("P4Poller: in object: %s" % ex.object)
-                log.err("P4Poller: poll failed on %s, %s" %
-                        (self.p4port, self.p4base))
+                log.msg("P4Poller: couldn't decode changelist description: {}".format(ex.encoding))
+                log.msg("P4Poller: in object: {}".format(ex.object))
+                log.err("P4Poller: poll failed on {}, {}".format(self.p4port, self.p4base))
                 raise
 
             lines = result.split('\n')

@@ -16,6 +16,8 @@
 import json
 import os
 import pkg_resources
+from io import BytesIO
+from io import StringIO
 from urllib.parse import parse_qs
 from urllib.parse import unquote as urlunquote
 from uuid import uuid1
@@ -23,7 +25,6 @@ from uuid import uuid1
 import mock
 
 from twisted.internet import defer
-from twisted.python.compat import NativeStringIO
 from twisted.web import server
 
 from buildbot.test.fake import fakemaster
@@ -157,7 +158,8 @@ class WwwTestMixin(RequiresWwwMixin):
 
     def render_resource(self, rsrc, path=b'/', accept=None, method=b'GET',
                         origin=None, access_control_request_method=None,
-                        extraHeaders=None, request=None):
+                        extraHeaders=None, request=None,
+                        content=None, content_type=None):
         if not request:
             request = self.make_request(path, method=method)
             if accept:
@@ -169,6 +171,9 @@ class WwwTestMixin(RequiresWwwMixin):
                     access_control_request_method
             if extraHeaders is not None:
                 request.input_headers.update(extraHeaders)
+            if content_type is not None:
+                request.input_headers.update({b'content-type': content_type})
+                request.content = BytesIO(content)
 
         rv = rsrc.render(request)
         if rv != server.NOT_DONE_YET:
@@ -187,7 +192,7 @@ class WwwTestMixin(RequiresWwwMixin):
         id = id or self.UUID
         request = self.make_request(path)
         request.method = b"POST"
-        request.content = NativeStringIO(requestJson or json.dumps(
+        request.content = StringIO(requestJson or json.dumps(
             {"jsonrpc": "2.0", "method": action, "params": params, "id": id}))
         request.input_headers = {b'content-type': content_type}
         rv = rsrc.render(request)

@@ -14,7 +14,6 @@
 # Copyright Buildbot Team Members
 
 from twisted.internet import defer
-from twisted.internet import reactor
 from twisted.python import log
 
 from buildbot import locks
@@ -103,7 +102,7 @@ class BotMaster(service.ReconfigurableServiceMixin, service.AsyncMultiService, L
         self.brd.setServiceParent(self)
 
     @defer.inlineCallbacks
-    def cleanShutdown(self, quickMode=False, stopReactor=True, _reactor=reactor):
+    def cleanShutdown(self, quickMode=False, stopReactor=True):
         """Shut down the entire process, once all currently-running builds are
         complete.
         quickMode will mark all builds as retry (except the ones that were triggered)
@@ -168,7 +167,7 @@ class BotMaster(service.ReconfigurableServiceMixin, service.AsyncMultiService, L
             else:
                 if stopReactor and self.shuttingDown:
                     log.msg("Stopping reactor")
-                    _reactor.stop()
+                    self.master.reactor.stop()
                 break
 
         if not self.shuttingDown:
@@ -200,18 +199,20 @@ class BotMaster(service.ReconfigurableServiceMixin, service.AsyncMultiService, L
         return list(self.builders.values())
 
     @defer.inlineCallbacks
+    def getBuilderById(self, builderid):
+        for builder in self.getBuilders():
+            if builderid == (yield builder.getBuilderId()):
+                return builder
+        return None
+
+    @defer.inlineCallbacks
     def startService(self):
         @defer.inlineCallbacks
         def buildRequestAdded(key, msg):
             builderid = msg['builderid']
-            buildername = None
-            # convert builderid to buildername
-            for builder in self.builders.values():
-                if builderid == (yield builder.getBuilderId()):
-                    buildername = builder.name
-                    break
-            if buildername:
-                self.maybeStartBuildsForBuilder(buildername)
+            builder = yield self.getBuilderById(builderid)
+            if builder is not None:
+                self.maybeStartBuildsForBuilder(builder.name)
 
         # consume both 'new' and 'unclaimed' build requests
         startConsuming = self.master.mq.startConsuming
@@ -269,7 +270,7 @@ class BotMaster(service.ReconfigurableServiceMixin, service.AsyncMultiService, L
                 builder.master = None
                 builder.botmaster = None
 
-                yield defer.maybeDeferred(builder.disownServiceParent)
+                yield builder.disownServiceParent()
 
             for n in added_names:
                 builder = Builder(n)

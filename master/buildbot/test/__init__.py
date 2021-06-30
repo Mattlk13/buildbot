@@ -16,17 +16,22 @@
 import os
 import sys
 import warnings
-from distutils.version import LooseVersion
+from pkg_resources import parse_version
+
+import setuptools  # force import setuptools before any other distutils imports
 
 from buildbot import monkeypatches
+from buildbot.test.util.warnings import assertProducesWarning  # noqa pylint: disable=wrong-import-position
+from buildbot.test.util.warnings import assertProducesWarnings  # noqa pylint: disable=wrong-import-position
+from buildbot.warnings import DeprecatedApiWarning  # noqa pylint: disable=wrong-import-position
 
 # import mock so we bail out early if it's not installed
 try:
     import mock
     [mock]
-except ImportError:
+except ImportError as e:
     raise ImportError("\nBuildbot tests require the 'mock' module; "
-                      "try 'pip install mock'")
+                      "try 'pip install mock'") from e
 
 # apply the same patches the buildmaster does when it starts
 monkeypatches.patch_all(for_tests=True)
@@ -34,9 +39,21 @@ monkeypatches.patch_all(for_tests=True)
 # enable deprecation warnings
 warnings.filterwarnings('always', category=DeprecationWarning)
 
-if LooseVersion(mock.__version__) < LooseVersion("0.8"):
+if parse_version(mock.__version__) < parse_version("0.8"):
     raise ImportError("\nBuildbot tests require mock version 0.8.0 or "
                       "higher; try 'pip install -U mock'")
+
+[setuptools]  # force use for pylint
+
+# This is where we load deprecated module-level APIs to ignore warning produced by importing them.
+# After the deprecated API has been removed, leave at least one instance of the import in a
+# commented state as reference.
+
+# with assertProducesWarnings(DeprecatedApiWarning,
+#                             messages_patterns=[
+#                                 r" buildbot\.status\.base has been deprecated",
+#                             ]):
+#     import buildbot.status.base as _  # noqa
 
 # All deprecated modules should be loaded, consider future warnings in tests as errors.
 # In order to not pollute the test outputs,
@@ -80,16 +97,18 @@ warnings.filterwarnings('ignore', ".*`formatargspec` is deprecated.*", Deprecati
 
 # Python 3.7 adds a deprecation importing ABCs from collection.
 # Such imports are made in dependencies (e.g moto, werzeug, pyparsing)
-warnings.filterwarnings('ignore', ".*Using or importing the ABCs from 'collections'.*", DeprecationWarning)
+warnings.filterwarnings('ignore', ".*Using or importing the ABCs from 'collections'.*",
+                        DeprecationWarning)
 
 # more 3.7 warning from moto
-warnings.filterwarnings('ignore', r".*Use 'list\(elem\)' or iteration over elem instead.*", DeprecationWarning)
+warnings.filterwarnings('ignore', r".*Use 'list\(elem\)' or iteration over elem instead.*",
+                        DeprecationWarning)
 
 # ignore ResourceWarnings for unclosed sockets for the pg8000 driver on Python 3+ (tech debt: #4508)
 if sys.version_info[0] >= 3 and "pg8000" in os.getenv("BUILDBOT_TEST_DB_URL", ""):
     warnings.filterwarnings('ignore', ".*unclosed .*socket", ResourceWarning)
 
-# Python 3.5 on CircleCI shows this warning
+# Python 3.5-3.8 shows this warning
 warnings.filterwarnings('ignore', ".*the imp module is deprecated in favour of importlib*")
 
 # sqlalchemy-migrate uses deprecated api from sqlalchemy https://review.openstack.org/#/c/648072/
@@ -104,3 +123,9 @@ warnings.filterwarnings('ignore', ".*Not importing directory .*/zope: missing __
                         category=ImportWarning)
 warnings.filterwarnings('ignore', ".*Not importing directory .*/sphinxcontrib: missing __init__",
                         category=ImportWarning)
+
+# ignore warnings from importing lib2to3 via buildbot_pkg ->
+# setuptools.command.build_py -> setuptools.lib2to3_ex -> lib2to3
+# https://github.com/pypa/setuptools/issues/2086
+warnings.filterwarnings('ignore', ".*lib2to3 package is deprecated",
+                        category=PendingDeprecationWarning)

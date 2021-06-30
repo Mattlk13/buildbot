@@ -7,10 +7,8 @@ import { testPageUrl } from './pages/base';
 
 describe('change hook', function() {
     let builder = null;
-    let console = null;
     beforeEach(function() {
         builder = new BuilderPage('runtests1', 'force');
-        return console = new ConsolePage();
     });
 
     afterEach(async () => {
@@ -20,7 +18,7 @@ describe('change hook', function() {
 
     it('should create a build', async () => {
         await builder.go();
-        let lastbuild = await builder.getLastSuccessBuildNumber();
+        let lastbuild = await builder.getLastFinishedBuildNumber();
         await post(`${testPageUrl}/change_hook/base`).form({
             comments:'sd',
             project:'pyflakes',
@@ -30,8 +28,8 @@ describe('change hook', function() {
             revision: 'HEAD',
             branch:'master'
         });
-        await builder.waitNextBuildFinished(lastbuild);
-        await console.go();
-        expect(await console.countSuccess()).toBeGreaterThan(0);
+        await builder.waitBuildFinished(lastbuild + 1);
+        let result = await builder.getBuildResult(lastbuild + 1);
+        expect(result).toEqual("SUCCESS");
     });
 });

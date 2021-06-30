@@ -18,6 +18,7 @@ from twisted.internet import defer
 from twisted.python import log
 
 from buildbot.util.eventual import fireEventually
+from buildbot.warnings import warn_deprecated
 from buildbot.worker.protocols import base
 
 
@@ -33,13 +34,13 @@ class ProxyMixin():
         self._disconnect_listeners = []
 
     def callRemote(self, message, *args, **kw):
-        method = getattr(self.impl, "remote_%s" % message, None)
+        method = getattr(self.impl, "remote_{}".format(message), None)
         if method is None:
-            raise AttributeError("No such method: remote_%s" % (message,))
+            raise AttributeError("No such method: remote_{}".format(message))
         try:
             state = method(*args, **kw)
         except TypeError:
-            log.msg("%s didn't accept %s and %s" % (method, args, kw))
+            log.msg("{} didn't accept {} and {}".format(method, args, kw))
             raise
         # break callback recursion for large transfers by using fireEventually
         return fireEventually(state)
@@ -68,6 +69,18 @@ class FileWriterProxy(ProxyMixin):
 class Connection(base.Connection):
     proxies = {base.FileWriterImpl: FileWriterProxy,
                base.FileReaderImpl: FileReaderProxy}
+
+    def __init__(self, master_or_worker, worker=None):
+        # All the existing code passes just the name to the Connection, however we'll need to
+        # support an older versions of buildbot-worker using two parameter signature for some time.
+        if worker is None:
+            worker = master_or_worker
+        else:
+            warn_deprecated('3.2.0', 'LocalWorker: Using different version of buildbot-worker ' +
+                            'than buildbot is not supported')
+
+        super().__init__(worker.workername)
+        self.worker = worker
 
     def loseConnection(self):
         self.notifyDisconnected()

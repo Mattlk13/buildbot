@@ -92,7 +92,8 @@ class DockerBaseWorker(AbstractLatentWorker):
         return super().reconfigService(name, password, **kwargs)
 
     def getContainerName(self):
-        return ('buildbot-{worker}-{hash}'.format(worker=self.workername, hash=self.masterhash)).replace("_", "-")
+        return ('buildbot-{worker}-{hash}'.format(worker=self.workername,
+                                                  hash=self.masterhash)).replace("_", "-")
 
     @property
     def shortid(self):
@@ -125,8 +126,8 @@ class DockerBaseWorker(AbstractLatentWorker):
             return fqdn
 
 
-class DockerLatentWorker(DockerBaseWorker,
-                         CompatibleLatentWorkerMixin):
+class DockerLatentWorker(CompatibleLatentWorkerMixin,
+                         DockerBaseWorker):
     instance = None
 
     def checkConfig(self, name, password, docker_host, image=None,
@@ -134,7 +135,7 @@ class DockerLatentWorker(DockerBaseWorker,
                     tls=None, followStartupLogs=False, masterFQDN=None,
                     hostconfig=None, autopull=False, alwaysPull=False,
                     custom_context=False, encoding='gzip', buildargs=None,
-                    **kwargs):
+                    hostname=None, **kwargs):
 
         super().checkConfig(name, password, image, masterFQDN, **kwargs)
 
@@ -155,8 +156,8 @@ class DockerLatentWorker(DockerBaseWorker,
                 try:
                     bind, volume = volume_string.split(":", 1)
                 except ValueError:
-                    config.error("Invalid volume definition for docker "
-                                 "%s. Skipping..." % volume_string)
+                    config.error(("Invalid volume definition for docker "
+                                  "{}. Skipping...").format(volume_string))
                     continue
 
     @defer.inlineCallbacks
@@ -165,7 +166,8 @@ class DockerLatentWorker(DockerBaseWorker,
                         version=None, tls=None, followStartupLogs=False,
                         masterFQDN=None, hostconfig=None, autopull=False,
                         alwaysPull=False, custom_context=False,
-                        encoding='gzip', buildargs=None, **kwargs):
+                        encoding='gzip', buildargs=None,
+                        hostname=None, **kwargs):
 
         yield super().reconfigService(name, password, image, masterFQDN, **kwargs)
         self.volumes = volumes or []
@@ -185,6 +187,7 @@ class DockerLatentWorker(DockerBaseWorker,
             self.client_args['version'] = version
         if tls is not None:
             self.client_args['tls'] = tls
+        self.hostname = hostname
 
     def _thd_parse_volumes(self, volumes):
         volume_list = []
@@ -192,8 +195,8 @@ class DockerLatentWorker(DockerBaseWorker,
             try:
                 _, volume = volume_string.split(":", 1)
             except ValueError:
-                config.error("Invalid volume definition for docker "
-                             "%s. Skipping..." % volume_string)
+                config.error(("Invalid volume definition for docker "
+                              "{}. Skipping...").format(volume_string))
                 continue
 
             if volume.endswith(':ro') or volume.endswith(':rw'):
@@ -212,18 +215,18 @@ class DockerLatentWorker(DockerBaseWorker,
     def renderWorkerProps(self, build):
         return build.render((self.image, self.dockerfile,
                              self.volumes, self.custom_context,
-                             self.encoding, self.buildargs))
+                             self.encoding, self.buildargs, self.hostname))
 
     @defer.inlineCallbacks
     def start_instance(self, build):
         if self.instance is not None:
             raise ValueError('instance active')
-        image, dockerfile, volumes, custom_context, encoding, buildargs = \
+        image, dockerfile, volumes, custom_context, encoding, buildargs, hostname = \
             yield self.renderWorkerPropsOnStart(build)
 
         res = yield threads.deferToThread(self._thd_start_instance, image,
                                           dockerfile, volumes, custom_context,
-                                          encoding, buildargs)
+                                          encoding, buildargs, hostname)
         defer.returnValue(res)
 
     def _image_exists(self, client, name):
@@ -237,7 +240,7 @@ class DockerLatentWorker(DockerBaseWorker,
         return False
 
     def _thd_start_instance(self, image, dockerfile, volumes,
-                            custom_context, encoding, buildargs):
+                            custom_context, encoding, buildargs, hostname):
         docker_client = self._getDockerClient()
         container_name = self.getContainerName()
         # cleanup the old instances
@@ -257,10 +260,9 @@ class DockerLatentWorker(DockerBaseWorker,
         if image is not None:
             found = self._image_exists(docker_client, image)
         else:
-            image = '%s_%s_image' % (self.workername, id(self))
+            image = '{}_{}_image'.format(self.workername, id(self))
         if (not found) and (dockerfile is not None):
-            log.msg("Image '%s' not found, building it from scratch" %
-                    image)
+            log.msg("Image '{}' not found, building it from scratch".format(image))
             if (custom_context):
                 with open(dockerfile, 'rb') as fin:
                     lines = docker_client.build(fileobj=fin,
@@ -280,19 +282,18 @@ class DockerLatentWorker(DockerBaseWorker,
         imageExists = self._image_exists(docker_client, image)
         if ((not imageExists) or self.alwaysPull) and self.autopull:
             if (not imageExists):
-                log.msg("Image '%s' not found, pulling from registry" % image)
+                log.msg("Image '{}' not found, pulling from registry".format(image))
             docker_client.pull(image)
 
         if (not self._image_exists(docker_client, image)):
-            log.msg("Image '%s' not found" % image)
-            raise LatentWorkerCannotSubstantiate(
-                'Image "%s" not found on docker host.' % image
-            )
+            msg = 'Image "{}" not found on docker host.'.format(image)
+            log.msg(msg)
+            raise LatentWorkerCannotSubstantiate(msg)
 
         volumes, binds = self._thd_parse_volumes(volumes)
         host_conf = self.hostconfig.copy()
         host_conf['binds'] = binds
-        if docker_py_version >= 2.2:
+        if docker_py_version >= 2.2 and 'init' not in host_conf:
             host_conf['init'] = True
         host_conf = docker_client.create_host_config(**host_conf)
 
@@ -302,7 +303,8 @@ class DockerLatentWorker(DockerBaseWorker,
             name=self.getContainerName(),
             volumes=volumes,
             environment=self.createEnvironment(),
-            host_config=host_conf
+            host_config=host_conf,
+            hostname=hostname
         )
 
         if instance.get('Id') is None:
@@ -311,7 +313,7 @@ class DockerLatentWorker(DockerBaseWorker,
                 'Failed to start container'
             )
         shortid = instance['Id'][:6]
-        log.msg('Container created, Id: %s...' % (shortid,))
+        log.msg('Container created, Id: {}...'.format(shortid))
         instance['image'] = image
         self.instance = instance
         docker_client.start(instance)
@@ -320,7 +322,7 @@ class DockerLatentWorker(DockerBaseWorker,
             logs = docker_client.attach(
                 container=instance, stdout=True, stderr=True, stream=True)
             for line in logs:
-                log.msg("docker VM %s: %s" % (shortid, line.strip()))
+                log.msg("docker VM {}: {}".format(shortid, line.strip()))
                 if self.conn:
                     break
             del logs
@@ -334,11 +336,12 @@ class DockerLatentWorker(DockerBaseWorker,
             return defer.succeed(None)
         instance = self.instance
         self.instance = None
+        self.resetWorkerPropsOnStop()
         return threads.deferToThread(self._thd_stop_instance, instance, fast)
 
     def _thd_stop_instance(self, instance, fast):
         docker_client = self._getDockerClient()
-        log.msg('Stopping container %s...' % instance['Id'][:6])
+        log.msg('Stopping container {}...'.format(instance['Id'][:6]))
         docker_client.stop(instance['Id'])
         if not fast:
             docker_client.wait(instance['Id'])

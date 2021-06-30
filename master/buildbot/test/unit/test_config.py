@@ -38,13 +38,13 @@ from buildbot.changes import base as changes_base
 from buildbot.process import factory
 from buildbot.process import properties
 from buildbot.schedulers import base as schedulers_base
-from buildbot.status import base as status_base
 from buildbot.test.util import dirs
 from buildbot.test.util.config import ConfigErrorsMixin
 from buildbot.test.util.warnings import assertNotProducesWarnings
 from buildbot.test.util.warnings import assertProducesWarning
 from buildbot.util import service
-from buildbot.worker_transition import DeprecatedWorkerAPIWarning
+from buildbot.warnings import ConfigWarning
+from buildbot.warnings import DeprecatedApiWarning
 
 try:
     # Python 2
@@ -80,10 +80,6 @@ class FakeChangeSource(changes_base.ChangeSource):
 
     def __init__(self):
         super().__init__(name='FakeChangeSource')
-
-
-class FakeStatusReceiver(status_base.StatusReceiver):
-    pass
 
 
 @implementer(interfaces.IScheduler)
@@ -465,6 +461,10 @@ class MasterConfig_loaders(ConfigErrorsMixin, unittest.TestCase):
     def test_load_global_title(self):
         self.do_test_load_global(dict(title='hi'), title='hi')
 
+    def test_load_global_title_too_long(self):
+        with assertProducesWarning(ConfigWarning, message_pattern=r"Title is too long"):
+            self.do_test_load_global(dict(title="Very very very very very long title"))
+
     def test_load_global_projectURL(self):
         self.do_test_load_global(dict(projectName='hey'), title='hey')
 
@@ -480,24 +480,10 @@ class MasterConfig_loaders(ConfigErrorsMixin, unittest.TestCase):
     def test_load_global_changeHorizon_none(self):
         self.do_test_load_global(dict(changeHorizon=None), changeHorizon=None)
 
-    def test_load_global_eventHorizon(self):
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"`eventHorizon` is deprecated and ignored"):
-            self.do_test_load_global(
-                dict(eventHorizon=10))
-
-    def test_load_global_status(self):
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"`status` targets are deprecated and ignored"):
-            self.do_test_load_global(
-                dict(status=[]))
-
     def test_load_global_buildbotNetUsageData(self):
         self.patch(config, "_in_unit_tests", False)
         with assertProducesWarning(
-                config.ConfigWarning,
+                ConfigWarning,
                 message_pattern=r"`buildbotNetUsageData` is not configured and defaults to basic."):
             self.do_test_load_global(
                 dict())
@@ -627,30 +613,12 @@ class MasterConfig_loaders(ConfigErrorsMixin, unittest.TestCase):
         self.cfg.load_db(self.filename, dict(db_url='abcd'))
         self.assertResults(db=dict(db_url='abcd'))
 
-    def test_load_db_db_poll_interval(self):
-        # value is ignored, but no error
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"db_poll_interval is deprecated and will be ignored"):
-            self.cfg.load_db(self.filename, dict(db_poll_interval=2))
-        self.assertResults(
-            db=dict(db_url='sqlite:///state.sqlite'))
-
     def test_load_db_dict(self):
-        # db_poll_interval value is ignored, but no error
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"db_poll_interval is deprecated and will be ignored"):
-            self.cfg.load_db(self.filename,
-                             dict(db=dict(db_url='abcd', db_poll_interval=10)))
+        self.cfg.load_db(self.filename, {'db': {'db_url': 'abcd'}})
         self.assertResults(db=dict(db_url='abcd'))
 
     def test_load_db_unk_keys(self):
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"db_poll_interval is deprecated and will be ignored"):
-            self.cfg.load_db(self.filename,
-                             dict(db=dict(db_url='abcd', db_poll_interval=10, bar='bar')))
+        self.cfg.load_db(self.filename, {'db': {'db_url': 'abcd', 'bar': 'bar'}})
         self.assertConfigError(self.errors, "unrecognized keys in")
 
     def test_load_mq_defaults(self):
@@ -1101,7 +1069,7 @@ class MasterConfig_checkers(ConfigErrorsMixin, unittest.TestCase):
             lock = locks.MasterLock(name)
             if bare_builder_lock:
                 return lock
-            return locks.LockAccess(lock, "counting", _skipChecks=True)
+            return locks.LockAccess(lock, "counting", count=1)
 
         b1, b2 = bldr('b1'), bldr('b2')
         self.cfg.builders = [b1, b2]
@@ -1287,7 +1255,7 @@ class MasterConfig_old_worker_api(unittest.TestCase):
         self.cfg = config.MasterConfig()
 
     def test_workers_new_api(self):
-        with assertNotProducesWarnings(DeprecatedWorkerAPIWarning):
+        with assertNotProducesWarnings(DeprecatedApiWarning):
             self.assertEqual(self.cfg.workers, [])
 
 
@@ -1344,15 +1312,6 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         with self.assertRaisesConfigError("workername must be a string"):
             config.BuilderConfig(name='a', workername=1, factory=self.factory)
 
-    def test_bogus_category(self):
-        with assertProducesWarning(
-                config.ConfigWarning,
-                message_pattern=r"builder categories are deprecated and should be replaced with"):
-            with self.assertRaisesConfigError("category must be a string"):
-                config.BuilderConfig(category=13,
-                                     name='a', workernames=['a'],
-                                     factory=self.factory)
-
     def test_tags_must_be_list(self):
         with self.assertRaisesConfigError("tags must be a list"):
             config.BuilderConfig(tags='abc',
@@ -1370,13 +1329,6 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         with self.assertRaisesConfigError(
                 "builder 'a': tags list contains duplicate tags: abc"):
             config.BuilderConfig(tags=['abc', 'bca', 'abc'],
-                                 name='a', workernames=['a'],
-                                 factory=self.factory)
-
-    def test_tags_no_categories_too(self):
-        with self.assertRaisesConfigError(
-                "categories are deprecated and replaced by tags; you should only specify tags"):
-            config.BuilderConfig(tags=['abc'], category='def',
                                  name='a', workernames=['a'],
                                  factory=self.factory)
 
@@ -1491,7 +1443,7 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         self.assertEqual(cfg.workernames, ['a'])
 
     def test_init_workername_positional(self):
-        with assertNotProducesWarnings(DeprecatedWorkerAPIWarning):
+        with assertNotProducesWarnings(DeprecatedApiWarning):
             cfg = config.BuilderConfig(
                 'a b c', 'a', factory=self.factory)
 
@@ -1504,7 +1456,7 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         self.assertEqual(cfg.workernames, ['a'])
 
     def test_init_workernames_positional(self):
-        with assertNotProducesWarnings(DeprecatedWorkerAPIWarning):
+        with assertNotProducesWarnings(DeprecatedApiWarning):
             cfg = config.BuilderConfig(
                 'a b c', None, ['a'], factory=self.factory)
 
@@ -1518,7 +1470,7 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         self.assertEqual(cfg.workerbuilddir, 'dir')
 
     def test_init_workerbuilddir_positional(self):
-        with assertNotProducesWarnings(DeprecatedWorkerAPIWarning):
+        with assertNotProducesWarnings(DeprecatedApiWarning):
             cfg = config.BuilderConfig(
                 'a b c', 'a', None, None, 'dir', factory=self.factory)
 
@@ -1529,14 +1481,6 @@ class BuilderConfig(ConfigErrorsMixin, unittest.TestCase):
         cfg = config.BuilderConfig(
             name='a b c', workername='a', factory=self.factory,
             nextWorker=f)
-
-        self.assertEqual(cfg.nextWorker, f)
-
-    def test_init_next_worker_positional(self):
-        f = lambda: None
-        with assertNotProducesWarnings(DeprecatedWorkerAPIWarning):
-            cfg = config.BuilderConfig(
-                'a b c', 'a', None, None, None, self.factory, None, None, f)
 
         self.assertEqual(cfg.nextWorker, f)
 
@@ -1589,11 +1533,11 @@ class ReconfigurableServiceMixin(unittest.TestCase):
     def test_multiservice(self):
         svc = FakeMultiService()
         ch1 = FakeService()
-        ch1.setServiceParent(svc)
+        yield ch1.setServiceParent(svc)
         ch2 = FakeMultiService()
-        ch2.setServiceParent(svc)
+        yield ch2.setServiceParent(svc)
         ch3 = FakeService()
-        ch3.setServiceParent(ch2)
+        yield ch3.setServiceParent(ch2)
         yield svc.reconfigServiceWithBuildbotConfig(mock.Mock())
 
         self.assertTrue(svc.called)
@@ -1605,13 +1549,13 @@ class ReconfigurableServiceMixin(unittest.TestCase):
     def test_multiservice_priority(self):
         parent = FakeMultiService()
         svc128 = FakeService()
-        svc128.setServiceParent(parent)
+        yield svc128.setServiceParent(parent)
 
         services = [svc128]
         for i in range(20, 1, -1):
             svc = FakeService()
             svc.reconfig_priority = i
-            svc.setServiceParent(parent)
+            yield svc.setServiceParent(parent)
             services.append(svc)
 
         yield parent.reconfigServiceWithBuildbotConfig(mock.Mock())
@@ -1624,7 +1568,7 @@ class ReconfigurableServiceMixin(unittest.TestCase):
     def test_multiservice_nested_failure(self):
         svc = FakeMultiService()
         ch1 = FakeService()
-        ch1.setServiceParent(svc)
+        yield ch1.setServiceParent(svc)
         ch1.succeed = False
         try:
             yield svc.reconfigServiceWithBuildbotConfig(mock.Mock())

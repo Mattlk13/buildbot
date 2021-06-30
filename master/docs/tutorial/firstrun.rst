@@ -19,6 +19,21 @@ For those more familiar with Docker_, there also exists a :ref:`docker version o
 
 You should be able to cut and paste each shell block from this tutorial directly into a terminal.
 
+Simple introduction to BuildBot
+-------------------------------
+
+Before trying to run BuildBot it's helpful to know what BuildBot is.
+
+BuildBot is a continuous integration framework written in Python.
+It consists of a master daemon and potentially many worker daemons that usually run on other machines.
+The master daemon runs a web server that allows the end user to start new builds and to control the behaviour of the BuildBot instance.
+The master also distributes builds to the workers.
+The worker daemons connect to the master daemon and execute builds whenever master tells them to do so.
+
+In this tutorial we will run a single master and a single worker on the same machine.
+
+A more throughout explanation can be found in the :ref:`manual section <Introduction>` of the Buildbot documentation.
+
 .. _Docker: https://docker.com
 
 .. _getting-code-label:
@@ -53,10 +68,12 @@ Creating a master
 The first necessary step is to create a virtualenv for our master.
 We will also use a separate directory to demonstrate the distinction between a master and worker:
 
+On Python 2:
+
 .. code-block:: bash
 
-  mkdir -p ~/tmp/bb-master
-  cd ~/tmp/bb-master
+  mkdir -p ~/buildbot-test/master
+  cd ~/buildbot-test/master
 
 
 On Python 3:
@@ -65,6 +82,28 @@ On Python 3:
 
   python3 -m venv sandbox
   source sandbox/bin/activate
+
+
+Next, we need to install several build dependencies to make sure we can install buildbot and its supporting packages.
+These build dependencies are:
+
+* GCC build tools (``gcc`` for RHEL/CentOS/Fedora based distributions, or ``build-essential``  for Ubuntu/Debian based distributions).
+* Python development library (``python3-devel`` for RHEL/CentOS/Fedora based distributions, or ``python3-dev`` for Ubuntu/Debian based distributions).
+* OpenSSL development library (``openssl-devel`` for RHEL/CentOS/Fedora based distributions, or ``libssl-dev`` for Ubuntu/Debian based distributions).
+* `libffi` development library (``libffi-devel`` for RHEL/CentOS/Fedora based distributions, or ``libffi-dev`` for Ubuntu/Debian based distributions).
+
+Install these build dependencies:
+
+.. code-block:: bash
+
+  # if in Ubuntu/Debian based distributions:
+  sudo apt-get install build-essential python3-dev libssl-dev libffi-dev
+
+  # if in RHEL/CentOS/Fedora based distributions:
+  sudo yum install gcc python3-devel openssl-devel libffi-devel
+
+
+or refer to your distribution's documentation on how to install these packages.
 
 
 Now that we are ready, we need to install buildbot:
@@ -81,6 +120,8 @@ Now that buildbot is installed, it's time to create the master:
   buildbot create-master master
 
 Buildbot's activity is controlled by a configuration file.
+Buildbot by default uses configuration from file at ``master.cfg``.
+Buildbot comes with a sample configuration file named ``master.cfg.sample``.
 We will use the sample configuration file unchanged:
 
 .. code-block:: bash
@@ -119,14 +160,14 @@ It would however be completely ok to do this on another computer - as long as th
 
 .. code-block:: bash
 
-  mkdir -p ~/tmp/bb-worker
-  cd ~/tmp/bb-worker
+  mkdir -p ~/buildbot-test/worker
+  cd ~/buildbot-test/worker
 
 On Python 2:
 
 .. code-block:: bash
 
-  virtualenv --no-site-packages sandbox
+  virtualenv sandbox
   source sandbox/bin/activate
 
 On Python 3:
@@ -178,7 +219,8 @@ Meanwhile, from the other terminal, in the master log (:file:`twisted.log` in th
 
 .. code-block:: none
 
-  2014-11-01 15:56:51+0100 [Broker,1,127.0.0.1] worker 'example-worker' attaching from IPv4Address(TCP, '127.0.0.1', 54015)
+  2014-11-01 15:56:51+0100 [Broker,1,127.0.0.1] worker 'example-worker' attaching from
+  IPv4Address(TCP, '127.0.0.1', 54015)
   2014-11-01 15:56:51+0100 [Broker,1,127.0.0.1] Got workerinfo from 'example-worker'
   2014-11-01 15:56:51+0100 [-] bot attached
 
@@ -187,7 +229,7 @@ You should now be able to go to http://localhost:8010, where you will see a web 
 .. image:: _images/index.png
    :alt: index page
 
-Click on "Builds" at the left to open the submenu and then `Builders <http://localhost:8010/#/builders>`_ to see that the worker you just started has connected to the master:
+Click on "Builds" at the left to open the submenu and then `Builders <http://localhost:8010/#/builders>`_ to see that the worker you just started (identified by the green bubble) has connected to the master:
 
 .. image:: _images/builders.png
    :alt: builder runtests is active.

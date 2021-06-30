@@ -26,17 +26,17 @@ from buildbot.test.util.misc import TestReactorMixin
 class TestSecretInVaultHttpFakeBase(ConfigErrorsMixin, TestReactorMixin,
                                     unittest.TestCase):
 
+    @defer.inlineCallbacks
     def setUp(self, version):
         self.setUpTestReactor()
         self.srvcVault = HashiCorpVaultSecretProvider(vaultServer="http://vaultServer",
                                                       vaultToken="someToken",
                                                       apiVersion=version)
         self.master = fakemaster.make_master(self, wantData=True)
-        self._http = self.successResultOf(
-            fakehttpclientservice.HTTPClientService.getFakeService(
-                self.master, self, 'http://vaultServer', headers={'X-Vault-Token': "someToken"}))
-        self.srvcVault.setServiceParent(self.master)
-        self.successResultOf(self.master.startService())
+        self._http = yield fakehttpclientservice.HTTPClientService.getService(
+                self.master, self, 'http://vaultServer', headers={'X-Vault-Token': "someToken"})
+        yield self.srvcVault.setServiceParent(self.master)
+        yield self.master.startService()
 
     @defer.inlineCallbacks
     def tearDown(self):
@@ -57,12 +57,26 @@ class TestSecretInVaultV1(TestSecretInVaultHttpFakeBase):
         self.assertEqual(value, "value1")
 
     @defer.inlineCallbacks
+    def test_get_any_key_without_value_name(self):
+        self._http.expect(method='get', ep='/v1/secret/any_key', params=None,
+                          data=None, json=None, code=200,
+                          content_json={"data": {"any_value": "value1"}})
+        yield self.assertFailure(self.srvcVault.get("any_key"), KeyError)
+
+    @defer.inlineCallbacks
+    def test_get_any_key_with_value_name(self):
+        self._http.expect(method='get', ep='/v1/secret/any_key', params=None,
+                          data=None, json=None, code=200,
+                          content_json={"data": {"any_value": "value1"}})
+        value = yield self.srvcVault.get("any_key/any_value")
+        self.assertEqual(value, "value1")
+
+    @defer.inlineCallbacks
     def testGetValueNotFound(self):
         self._http.expect(method='get', ep='/v1/secret/value', params=None,
                           data=None, json=None, code=200,
                           content_json={"data": {"valueNotFound": "value1"}})
-        value = yield self.srvcVault.get("value")
-        self.assertEqual(value, None)
+        yield self.assertFailure(self.srvcVault.get("value"), KeyError)
 
     @defer.inlineCallbacks
     def testGetError(self):
@@ -95,9 +109,8 @@ class TestSecretInVaultV1(TestSecretInVaultHttpFakeBase):
 
     @defer.inlineCallbacks
     def testReconfigSecretInVaultService(self):
-        self._http = self.successResultOf(
-            fakehttpclientservice.HTTPClientService.getFakeService(
-                self.master, self, 'serveraddr', headers={'X-Vault-Token': "someToken"}))
+        self._http = yield fakehttpclientservice.HTTPClientService.getService(
+                self.master, self, 'serveraddr', headers={'X-Vault-Token': "someToken"})
         yield self.srvcVault.reconfigService(vaultServer="serveraddr",
                                              vaultToken="someToken")
         self.assertEqual(self.srvcVault.vaultServer, "serveraddr")
@@ -118,12 +131,26 @@ class TestSecretInVaultV2(TestSecretInVaultHttpFakeBase):
         self.assertEqual(value, "value1")
 
     @defer.inlineCallbacks
+    def test_get_any_key_without_value_name(self):
+        self._http.expect(method='get', ep='/v1/secret/data/any_key', params=None,
+                          data=None, json=None, code=200,
+                          content_json={"data": {"data": {"any_value": "value1"}}})
+        yield self.assertFailure(self.srvcVault.get("any_key"), KeyError)
+
+    @defer.inlineCallbacks
+    def test_get_any_key_with_value_name(self):
+        self._http.expect(method='get', ep='/v1/secret/data/any_key', params=None,
+                          data=None, json=None, code=200,
+                          content_json={"data": {"data": {"any_value": "value1"}}})
+        value = yield self.srvcVault.get("any_key/any_value")
+        self.assertEqual(value, "value1")
+
+    @defer.inlineCallbacks
     def testGetValueNotFound(self):
         self._http.expect(method='get', ep='/v1/secret/data/value', params=None,
                           data=None, json=None, code=200,
                           content_json={"data": {"data": {"valueNotFound": "value1"}}})
-        value = yield self.srvcVault.get("value")
-        self.assertEqual(value, None)
+        yield self.assertFailure(self.srvcVault.get("value"), KeyError)
 
     @defer.inlineCallbacks
     def testGetError(self):

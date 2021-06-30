@@ -22,11 +22,13 @@ from buildbot.process.results import EXCEPTION
 from buildbot.process.results import FAILURE
 from buildbot.process.results import SUCCESS
 from buildbot.process.results import WARNINGS
-from buildbot.process.results import Results
-from buildbot.reporters.message import MessageFormatter as DefaultMessageFormatter
-from buildbot.reporters.message import MessageFormatterMissingWorker
-from buildbot.reporters.notifier import NotifierBase
+from buildbot.reporters.base import ReporterBase
+from buildbot.reporters.generators.build import BuildStatusGenerator
+from buildbot.reporters.message import MessageFormatter
 from buildbot.util import httpclientservice
+
+from .utils import merge_reports_prop
+from .utils import merge_reports_prop_take_first
 
 ENCODING = 'utf8'
 
@@ -38,46 +40,32 @@ LEVELS = {
     WARNINGS: 'warnings'
 }
 
+DEFAULT_MSG_TEMPLATE = \
+    ('The Buildbot has detected a <a href="{{ build_url }}">{{ status_detected }}</a>' +
+     'of <i>{{ buildername }}</i> while building {{ projects }} on {{ workername }}.')
 
-class PushjetNotifier(NotifierBase):
 
-    def checkConfig(self, secret,
-                    mode=("failing", "passing", "warnings"),
-                    tags=None, builders=None,
-                    buildSetSummary=False, messageFormatter=None,
-                    subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                    schedulers=None, branches=None,
-                    levels=None, base_url='https://api.pushjet.io',
-                    watchedWorkers=None, messageFormatterMissingWorker=None):
-        super(PushjetNotifier, self).checkConfig(mode, tags, builders,
-                                                 buildSetSummary, messageFormatter,
-                                                 subject, False, False,
-                                                 schedulers,
-                                                 branches, watchedWorkers)
+class PushjetNotifier(ReporterBase):
+
+    def checkConfig(self, secret, levels=None, base_url='https://api.pushjet.io',
+                    generators=None):
+
+        if generators is None:
+            generators = self._create_default_generators()
+
+        super().checkConfig(generators=generators)
 
         httpclientservice.HTTPClientService.checkAvailable(self.__class__.__name__)
 
     @defer.inlineCallbacks
-    def reconfigService(self, secret,
-                        mode=("failing", "passing", "warnings"),
-                        tags=None, builders=None,
-                        buildSetSummary=False, messageFormatter=None,
-                        subject="Buildbot %(result)s in %(title)s on %(builder)s",
-                        schedulers=None, branches=None,
-                        levels=None, base_url='https://api.pushjet.io',
-                        watchedWorkers=None, messageFormatterMissingWorker=None):
+    def reconfigService(self, secret, levels=None, base_url='https://api.pushjet.io',
+                        generators=None):
         secret = yield self.renderSecrets(secret)
-        if messageFormatter is None:
-            messageFormatter = DefaultMessageFormatter(template_type='html',
-                template_filename='default_notification.txt')
-        if messageFormatterMissingWorker is None:
-            messageFormatterMissingWorker = MessageFormatterMissingWorker(
-                template_filename='missing_notification.txt')
-        super(PushjetNotifier, self).reconfigService(mode, tags, builders,
-                                                     buildSetSummary, messageFormatter,
-                                                     subject, False, False,
-                                                     schedulers, branches,
-                                                     watchedWorkers, messageFormatterMissingWorker)
+
+        if generators is None:
+            generators = self._create_default_generators()
+
+        yield super().reconfigService(generators=generators)
         self.secret = secret
         if levels is None:
             self.levels = {}
@@ -86,24 +74,25 @@ class PushjetNotifier(NotifierBase):
         self._http = yield httpclientservice.HTTPClientService.getService(
             self.master, base_url)
 
-    def sendMessage(self, body, subject=None, type=None, builderName=None,
-                    results=None, builds=None, users=None, patches=None,
-                    logs=None, worker=None):
+    def _create_default_generators(self):
+        formatter = MessageFormatter(template_type='html', template=DEFAULT_MSG_TEMPLATE)
+        return [BuildStatusGenerator(message_formatter=formatter)]
 
-        if worker is not None and worker not in self.watchedWorkers:
-            return
+    def sendMessage(self, reports):
+        body = merge_reports_prop(reports, 'body')
+        subject = merge_reports_prop_take_first(reports, 'subject')
+        results = merge_reports_prop(reports, 'results')
+        worker = merge_reports_prop_take_first(reports, 'worker')
 
-        msg = {'message': body}
+        msg = {
+            'message': body,
+            'title': subject
+        }
+
         level = self.levels.get(LEVELS[results] if worker is None else 'worker_missing')
         if level is not None:
             msg['level'] = level
-        if subject is not None:
-            msg['title'] = subject
-        else:
-            msg['title'] = self.subject % {'result': Results[results],
-                                           'projectName': self.master.config.title,
-                                           'title': self.master.config.title,
-                                           'builder': builderName}
+
         return self.sendNotification(msg)
 
     def sendNotification(self, params):

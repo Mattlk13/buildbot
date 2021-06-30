@@ -22,7 +22,7 @@ from twisted.internet import reactor
 from twisted.python import log
 
 from buildbot.config import ConfigErrors
-from buildbot.interfaces import WorkerTooOldError
+from buildbot.interfaces import WorkerSetupError
 from buildbot.process import buildstep
 from buildbot.process import remotecommand
 from buildbot.process.results import SUCCESS
@@ -45,15 +45,15 @@ class Monotone(Source):
         self.method = method
         self.mode = mode
         self.branch = branch
-        self.sourcedata = "%s?%s" % (self.repourl, self.branch)
+        self.sourcedata = "{}?{}".format(self.repourl, self.branch)
         self.database = 'db.mtn'
         self.progress = progress
         super().__init__(**kwargs)
         errors = []
 
         if not self._hasAttrGroupMember('mode', self.mode):
-            errors.append("mode %s is not one of %s" %
-                          (self.mode, self._listAttrGroupMembers('mode')))
+            errors.append("mode {} is not one of {}".format(self.mode,
+                                                            self._listAttrGroupMembers('mode')))
         if self.mode == 'incremental' and self.method:
             errors.append("Incremental mode does not require method")
 
@@ -61,7 +61,7 @@ class Monotone(Source):
             if self.method is None:
                 self.method = 'copy'
             elif self.method not in self.possible_methods:
-                errors.append("Invalid method for mode == %s" % (self.mode))
+                errors.append("Invalid method for mode == {}".format(self.mode))
 
         if repourl is None:
             errors.append("you must provide repourl")
@@ -73,14 +73,14 @@ class Monotone(Source):
             raise ConfigErrors(errors)
 
     @defer.inlineCallbacks
-    def startVC(self, branch, revision, patch):
+    def run_vc(self, branch, revision, patch):
         self.revision = revision
-        self.stdio_log = self.addLogForRemoteCommands("stdio")
+        self.stdio_log = yield self.addLogForRemoteCommands("stdio")
 
         try:
             monotoneInstalled = yield self.checkMonotone()
             if not monotoneInstalled:
-                raise WorkerTooOldError("Monotone is not installed on worker")
+                raise WorkerSetupError("Monotone is not installed on worker")
 
             yield self._checkDb()
             yield self._retryPull()
@@ -97,11 +97,11 @@ class Monotone(Source):
             yield fn()
 
             if patch:
-                yield self.patch(None, patch)
+                yield self.patch(patch)
             yield self.parseGotRevision()
-            self.finish()
-        except Exception as e:
-            self.failed(e)
+            return SUCCESS
+        finally:
+            pass  # FIXME: remove this try:raise block
 
     @defer.inlineCallbacks
     def mode_full(self):
@@ -253,6 +253,7 @@ class Monotone(Source):
                 df.addCallback(lambda _: self._retryPull())
                 reactor.callLater(delay, df.callback, None)
                 yield df
+        return None
 
     @defer.inlineCallbacks
     def parseGotRevision(self):
@@ -262,7 +263,7 @@ class Monotone(Source):
         revision = stdout.strip()
         if len(revision) != 40:
             raise buildstep.BuildStepFailed()
-        log.msg("Got Monotone revision %s" % (revision, ))
+        log.msg("Got Monotone revision {}".format(revision))
         self.updateSourceProperty('got_revision', revision)
         return 0
 
@@ -275,18 +276,18 @@ class Monotone(Source):
 
         if decodeRC is None:
             decodeRC = {0: SUCCESS}
-        cmd = buildstep.RemoteShellCommand(workdir, command,
-                                           env=self.env,
-                                           logEnviron=self.logEnviron,
-                                           timeout=self.timeout,
-                                           collectStdout=collectStdout,
-                                           initialStdin=initialStdin,
-                                           decodeRC=decodeRC)
+        cmd = remotecommand.RemoteShellCommand(workdir, command,
+                                               env=self.env,
+                                               logEnviron=self.logEnviron,
+                                               timeout=self.timeout,
+                                               collectStdout=collectStdout,
+                                               initialStdin=initialStdin,
+                                               decodeRC=decodeRC)
         cmd.useLog(self.stdio_log, False)
         yield self.runCommand(cmd)
 
         if abandonOnFailure and cmd.didFail():
-            log.msg("Source step failed while running command %s" % cmd)
+            log.msg("Source step failed while running command {}".format(cmd))
             raise buildstep.BuildStepFailed()
         if collectStdout:
             return cmd.stdout
@@ -339,9 +340,3 @@ class Monotone(Source):
             log.msg("Workdir does not exist, falling back to a fresh clone")
 
         return workdir_exists
-
-    def finish(self):
-        self.setStatus(self.cmd, 0)
-        log.msg("Closing log, sending result of the command %s " %
-                (self.cmd))
-        return self.finished(0)

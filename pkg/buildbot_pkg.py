@@ -16,12 +16,11 @@
 # Method to add build step taken from here
 # https://seasonofcode.com/posts/how-to-add-custom-build-steps-and-commands-to-setuppy.html
 import datetime
-import distutils.cmd
 import os
 import re
 import subprocess
 import sys
-from distutils.version import LooseVersion
+from pkg_resources import parse_version
 from subprocess import PIPE
 from subprocess import STDOUT
 from subprocess import Popen
@@ -29,6 +28,8 @@ from subprocess import Popen
 import setuptools.command.build_py
 import setuptools.command.egg_info
 from setuptools import setup
+
+import distutils.cmd  # isort:skip
 
 old_listdir = os.listdir
 
@@ -42,9 +43,9 @@ def listdir(path):
 os.listdir = listdir
 
 
-def check_output(cmd):
+def check_output(cmd, shell):
     """Version of check_output which does not throw error"""
-    popen = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    popen = subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE)
     out = popen.communicate()[0].strip()
     if not isinstance(out, str):
         out = out.decode(sys.stdout.encoding)
@@ -198,26 +199,28 @@ class BuildJsCommand(distutils.cmd.Command):
         if self.already_run:
             return
         package = self.distribution.packages[0]
-        if os.path.exists("gulpfile.js") or os.path.exists("webpack.config.js"):
-            yarn_version = check_output("yarn --version")
-            assert yarn_version != "", "need nodejs and yarn installed in current PATH"
-            yarn_bin = check_output("yarn bin").strip()
-
-            commands = []
-
-            commands.append(['yarn', 'install', '--pure-lockfile'])
-
-            if os.path.exists("gulpfile.js"):
-                commands.append([os.path.join(yarn_bin, "gulp"), 'prod', '--notests'])
-            elif os.path.exists("webpack.config.js"):
-                commands.append(['yarn', 'run', 'build'])
+        if os.path.exists("webpack.config.js"):
 
             shell = bool(os.name == 'nt')
 
+            yarn_program = None
+            for program in ["yarnpkg", "yarn"]:
+                yarn_version = check_output([program, "--version"], shell=shell)
+                if yarn_version != "":
+                    yarn_program = program
+
+            assert yarn_program is not None, "need nodejs and yarn installed in current PATH"
+
+            yarn_bin = check_output([yarn_program, "bin"], shell=shell).strip()
+
+            commands = [
+                [yarn_program, 'install', '--pure-lockfile'],
+                [yarn_program, 'run', 'build'],
+            ]
+
             for command in commands:
-                self.announce(
-                    'Running command: %s' % str(" ".join(command)),
-                    level=distutils.log.INFO)
+                self.announce('Running command: {}'.format(str(" ".join(command))),
+                              level=distutils.log.INFO)
                 subprocess.check_call(command, shell=shell)
 
         self.copy_tree(os.path.join(package, 'static'), os.path.join(

@@ -25,8 +25,8 @@ class VersioningUtilsTests(unittest.SynchronousTestCase):
     def setUp(self):
         try:
             self.m = __import__(self.module_under_test)
-        except ImportError:
-            raise unittest.SkipTest(self.module_under_test + " package is not installed")
+        except ImportError as e:
+            raise unittest.SkipTest(self.module_under_test + " package is not installed") from e
 
     def test_gitDescribeToPep440devVersion(self):
         self.assertEqual(self.m.gitDescribeToPep440("v0.9.8-20-gf0f45ca"), "0.9.9-dev20")
@@ -41,10 +41,12 @@ class VersioningUtilsTests(unittest.SynchronousTestCase):
         self.assertEqual(self.m.gitDescribeToPep440("v0.9.9.post1-20-gf0f45ca"), "0.9.10-dev20")
 
     def test_getVersionFromArchiveIdNoTag(self):
-        self.assertEqual(self.m.getVersionFromArchiveId("1514651968  (git-archive-version)"), "2017.12.30")
+        version = self.m.getVersionFromArchiveId("1514651968  (git-archive-version)")
+        self.assertEqual(version, "2017.12.30")
 
     def test_getVersionFromArchiveIdtag(self):
-        self.assertEqual(self.m.getVersionFromArchiveId('1514808197  (HEAD -> master, tag: v1.0.0)'), "1.0.0")
+        version = self.m.getVersionFromArchiveId('1514808197  (HEAD -> master, tag: v1.0.0)')
+        self.assertEqual(version, "1.0.0")
 
 
 class VersioningUtilsTests_PKG(VersioningUtilsTests):

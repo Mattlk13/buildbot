@@ -41,7 +41,7 @@ class EightUpgradeError(Exception):
         This is not supported. Please start from a clean database
         http://docs.buildbot.net/latest/manual/installation/nine-upgrade.html"""
         # Call the base class constructor with the parameters it needs
-        super(EightUpgradeError, self).__init__(message)
+        super().__init__(message)
 
 
 class Model(base.DBConnectorComponent):
@@ -64,7 +64,8 @@ class Model(base.DBConnectorComponent):
     # * sqlalchemy does not handle sa.Boolean very well on MySQL or Postgres;
     #   use sa.SmallInteger instead
 
-    # build requests
+    # Tables related to build requests
+    # --------------------------------
 
     # A BuildRequest is a request for a particular build to be performed.  Each
     # BuildRequest is a part of a Buildset.  BuildRequests are claimed by
@@ -114,7 +115,8 @@ class Model(base.DBConnectorComponent):
         sa.Column('claimed_at', sa.Integer, nullable=False),
     )
 
-    # builds
+    # Tables related to builds
+    # ------------------------
 
     # This table contains the build properties
     build_properties = sautils.Table(
@@ -125,6 +127,20 @@ class Model(base.DBConnectorComponent):
         sa.Column('name', sa.String(256), nullable=False),
         # JSON encoded value
         sa.Column('value', sa.Text, nullable=False),
+        sa.Column('source', sa.String(256), nullable=False),
+    )
+
+    # This table contains transient build state.
+    build_data = sautils.Table(
+        'build_data', metadata,
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('buildid', sa.Integer,
+                  sa.ForeignKey('builds.id', ondelete='CASCADE'),
+                  nullable=False),
+        sa.Column('name', sa.String(256), nullable=False),
+        sa.Column('value', sa.LargeBinary().with_variant(sa.dialects.mysql.LONGBLOB, "mysql"),
+                  nullable=False),
+        sa.Column('length', sa.Integer, nullable=False),
         sa.Column('source', sa.String(256), nullable=False),
     )
 
@@ -162,7 +178,8 @@ class Model(base.DBConnectorComponent):
         sa.Column('results', sa.Integer),
     )
 
-    # steps
+    # Tables related to steps
+    # -----------------------
 
     steps = sautils.Table(
         'steps', metadata,
@@ -181,7 +198,8 @@ class Model(base.DBConnectorComponent):
             'hidden', sa.SmallInteger, nullable=False, server_default='0'),
     )
 
-    # logs
+    # Tables related to logs
+    # ----------------------
 
     logs = sautils.Table(
         'logs', metadata,
@@ -212,7 +230,8 @@ class Model(base.DBConnectorComponent):
         sa.Column('compressed', sa.SmallInteger, nullable=False),
     )
 
-    # buildsets
+    # Tables related to buildsets
+    # ---------------------------
 
     # This table contains input properties for buildsets
     buildset_properties = sautils.Table(
@@ -259,7 +278,8 @@ class Model(base.DBConnectorComponent):
         sa.Column('parent_relationship', sa.Text),
     )
 
-    # changesources
+    # Tables related to change sources
+    # --------------------------------
 
     # The changesources table gives a unique identifier to each ChangeSource.  It
     # also links to other tables used to ensure only one master runs each
@@ -289,7 +309,9 @@ class Model(base.DBConnectorComponent):
                   nullable=False),
     )
 
-    # workers
+    # Tables related to workers
+    # -------------------------
+
     workers = sautils.Table(
         "workers", metadata,
         sa.Column("id", sa.Integer, primary_key=True),
@@ -324,7 +346,8 @@ class Model(base.DBConnectorComponent):
                   nullable=False),
     )
 
-    # changes
+    # Tables related to changes
+    # ----------------------------
 
     # Files touched in changes
     change_files = sautils.Table(
@@ -420,7 +443,8 @@ class Model(base.DBConnectorComponent):
                   nullable=True),
     )
 
-    # sourcestamps
+    # Tables related to sourcestamps
+    # ------------------------------
 
     # Patches for SourceStamps that were generated through the try mechanism
     patches = sautils.Table(
@@ -495,7 +519,8 @@ class Model(base.DBConnectorComponent):
                   nullable=False),
     )
 
-    # schedulers
+    # Tables related to schedulers
+    # ----------------------------
 
     # The schedulers table gives a unique identifier to each scheduler.  It
     # also links to other tables used to ensure only one master runs each
@@ -546,7 +571,8 @@ class Model(base.DBConnectorComponent):
         sa.Column('important', sa.Integer),
     )
 
-    # builders
+    # Tables related to builders
+    # --------------------------
 
     builders = sautils.Table(
         'builders', metadata,
@@ -573,7 +599,9 @@ class Model(base.DBConnectorComponent):
                   nullable=False),
     )
 
-    # tags
+    # Tables related to tags
+    # ----------------------
+
     tags = sautils.Table(
         'tags', metadata,
         sa.Column('id', sa.Integer, primary_key=True),
@@ -595,7 +623,123 @@ class Model(base.DBConnectorComponent):
                   nullable=False),
     )
 
-    # objects
+    # Tables related to test results
+    # ------------------------------
+
+    # Represents a single test result set. A step can any number of test result sets,
+    # each of which may contain any number of test results.
+    test_result_sets = sautils.Table(
+        'test_result_sets', metadata,
+
+        sa.Column('id', sa.Integer, primary_key=True),
+
+        # In the future we will want to rearrange the underlying data in the database according
+        # to (builderid, buildid) tuple, so that huge number of entries in the table does not
+        # reduce the efficiency of retrieval of data for a particular build.
+        sa.Column('builderid', sa.Integer,
+                  sa.ForeignKey('builders.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('buildid', sa.Integer,
+                  sa.ForeignKey('builds.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('stepid', sa.Integer,
+                  sa.ForeignKey('steps.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        # The free-form description of the source of the test data that represent the test result
+        # set.
+        sa.Column('description', sa.Text, nullable=True),
+
+        sa.Column('category', sa.Text, nullable=False),
+
+        sa.Column('value_unit', sa.Text, nullable=False),
+
+        # The number of passed tests in cases when the pass or fail criteria depends only on how
+        # that single test runs.
+        sa.Column('tests_passed', sa.Integer, nullable=True),
+
+        # The number of failed tests in cases when the pass or fail criteria depends only on how
+        # that single test runs.
+        sa.Column('tests_failed', sa.Integer, nullable=True),
+
+        # true when all test results associated with test result set have been generated.
+        sa.Column('complete', sa.SmallInteger, nullable=False),
+    )
+
+    # Represents a test result. A single test result set will represent thousands of test results
+    # in any significant codebase that's tested.
+    #
+    # A common table is used for all tests results regardless of what data they carry. Most serious
+    # database engines will be able to optimize nullable fields out, so extra columns are almost
+    # free when not used in such cases.
+    test_results = sautils.Table(
+        'test_results', metadata,
+
+        sa.Column('id', sa.Integer, primary_key=True),
+
+        # The builder ID of the test result set that the test result belongs to.
+        # This is included for future partitioning support.
+        sa.Column('builderid', sa.Integer,
+                  sa.ForeignKey('builders.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('test_result_setid', sa.Integer,
+                  sa.ForeignKey('test_result_sets.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('test_nameid', sa.Integer,
+                  sa.ForeignKey('test_names.id', ondelete='CASCADE'),
+                  nullable=True),
+
+        sa.Column('test_code_pathid', sa.Integer,
+                  sa.ForeignKey('test_code_paths.id', ondelete='CASCADE'),
+                  nullable=True),
+
+        # The code line that the test originated from
+        sa.Column('line', sa.Integer, nullable=True),
+
+        # The duration of the test execution itself
+        sa.Column('duration_ns', sa.Integer, nullable=True),
+
+        # The result of the test converted to a string.
+        sa.Column('value', sa.Text, nullable=False),
+    )
+
+    # Represents the test names of test results.
+    test_names = sautils.Table(
+        'test_names', metadata,
+
+        sa.Column('id', sa.Integer, primary_key=True),
+
+        # The builder ID of the test result set that the test result belongs to.
+        # This is included for future partitioning support and also for querying all test names
+        # for a builder.
+        sa.Column('builderid', sa.Integer,
+                  sa.ForeignKey('builders.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('name', sa.Text, nullable=False),
+    )
+
+    # Represents the file paths of test results.
+    test_code_paths = sautils.Table(
+        'test_code_paths', metadata,
+
+        sa.Column('id', sa.Integer, primary_key=True),
+
+        # The builder ID of the test result set that the test result belongs to.
+        # This is included for future partitioning support
+        sa.Column('builderid', sa.Integer,
+                  sa.ForeignKey('builders.id', ondelete='CASCADE'),
+                  nullable=False),
+
+        sa.Column('path', sa.Text, nullable=False),
+    )
+
+    # Tables related to objects
+    # -------------------------
 
     # This table uniquely identifies objects that need to maintain state across
     # invocations.
@@ -623,7 +767,8 @@ class Model(base.DBConnectorComponent):
         sa.Column("value_json", sa.Text, nullable=False),
     )
 
-    # users
+    # Tables related to users
+    # -----------------------
 
     # This table identifies individual users, and contains buildbot-specific
     # information about those users.
@@ -658,7 +803,8 @@ class Model(base.DBConnectorComponent):
         sa.Column("attr_data", sa.String(128), nullable=False),
     )
 
-    # masters
+    # Tables related to masters
+    # -------------------------
 
     masters = sautils.Table(
         "masters", metadata,
@@ -678,12 +824,14 @@ class Model(base.DBConnectorComponent):
         sa.Column('last_active', sa.Integer, nullable=False),
     )
 
-    # indexes
+    # Indexes
+    # -------
 
     sa.Index('buildrequests_buildsetid', buildrequests.c.buildsetid)
     sa.Index('buildrequests_builderid', buildrequests.c.builderid)
     sa.Index('buildrequests_complete', buildrequests.c.complete)
     sa.Index('build_properties_buildid', build_properties.c.buildid)
+    sa.Index('build_data_buildid_name', build_data.c.buildid, build_data.c.name, unique=True)
     sa.Index('builds_buildrequestid', builds.c.buildrequestid)
     sa.Index('buildsets_complete', buildsets.c.complete)
     sa.Index('buildsets_submitted_at', buildsets.c.submitted_at)
@@ -767,6 +915,10 @@ class Model(base.DBConnectorComponent):
     sa.Index('logs_slug', logs.c.stepid, logs.c.slug, unique=True)
     sa.Index('logchunks_firstline', logchunks.c.logid, logchunks.c.first_line)
     sa.Index('logchunks_lastline', logchunks.c.logid, logchunks.c.last_line)
+    sa.Index('test_names_name', test_names.c.builderid, test_names.c.name,
+             mysql_length={'name': 255})
+    sa.Index('test_code_paths_path', test_code_paths.c.builderid, test_code_paths.c.path,
+             mysql_length={'path': 255})
 
     # MySQL creates indexes for foreign keys, and these appear in the
     # reflection.  This is a list of (table, index) names that should be
@@ -793,11 +945,45 @@ class Model(base.DBConnectorComponent):
         ('changes',
             dict(unique=False, column_names=['parent_changeids'],
                  name='parent_changeids')),
+        ('test_result_sets', {
+            'name': 'builderid',
+            'column_names': ['builderid'],
+            'unique': False,
+        }),
+        ('test_result_sets', {
+            'name': 'buildid',
+            'column_names': ['buildid'],
+            'unique': False,
+        }),
+        ('test_result_sets', {
+            'name': 'stepid',
+            'column_names': ['stepid'],
+            'unique': False,
+        }),
+        ('test_results', {
+            'name': 'test_result_setid',
+            'column_names': ['test_result_setid'],
+            'unique': False,
+        }),
+        ('test_results', {
+            'name': 'test_code_pathid',
+            'column_names': ['test_code_pathid'],
+            'unique': False,
+        }),
+        ('test_results', {
+            'name': 'builderid',
+            'column_names': ['builderid'],
+            'unique': False,
+        }),
+        ('test_results', {
+            'name': 'test_nameid',
+            'column_names': ['test_nameid'],
+            'unique': False,
+        }),
     ]
 
-    #
-    # migration support
-    #
+    # Migration support
+    # -----------------
 
     # this is a bit more complicated than might be expected because the first
     # seven database versions were once implemented using a homespun migration
@@ -848,7 +1034,7 @@ class Model(base.DBConnectorComponent):
 
         def table_exists(engine, tbl):
             try:
-                r = engine.execute("select * from %s limit 1" % tbl)
+                r = engine.execute("select * from {} limit 1".format(tbl))
                 r.close()
                 return True
             except Exception:
@@ -863,8 +1049,7 @@ class Model(base.DBConnectorComponent):
             changeset = schema.changeset(None)
             with sautils.withoutSqliteForeignKeys(engine):
                 for version, change in changeset:
-                    log.msg('migrating schema version %s -> %d'
-                            % (version, version + 1))
+                    log.msg('migrating schema version {} -> {}'.format(version, version + 1))
                     schema.runchange(version, change, 1)
 
         def check_sqlalchemy_migrate_version():
@@ -882,10 +1067,10 @@ class Model(base.DBConnectorComponent):
                 except Exception:
                     version = "0.0"
             version_tup = tuple(map(int, version.split('-', 1)[0].split('.')))
-            log.msg("using SQLAlchemy-Migrate version %s" % (version,))
+            log.msg("using SQLAlchemy-Migrate version {}".format(version))
             if version_tup < (0, 6, 1):
-                raise RuntimeError("You are using SQLAlchemy-Migrate %s. "
-                                   "The minimum version is 0.6.1." % (version,))
+                raise RuntimeError(("You are using SQLAlchemy-Migrate {}. "
+                                    "The minimum version is 0.6.1.").format(version))
 
         def version_control(engine, version=None):
             ControlledSchema.create(engine, self.repo_path, version)
@@ -900,7 +1085,16 @@ class Model(base.DBConnectorComponent):
                 old_version = r.scalar()
                 if old_version < 40:
                     raise EightUpgradeError()
-                upgrade(engine)
+                try:
+                    upgrade(engine)
+                except sa.exc.NoSuchTableError as e:  # pragma: no cover
+                    if 'migration_tmp' in str(e):
+                        log.err('A serious error has been encountered during the upgrade. The '
+                                'previous upgrade has been likely interrupted. The database has '
+                                'been damaged and automatic recovery is impossible.')
+                        log.err('If you believe this is an error, please submit a bug to the '
+                                'Buildbot project.')
+                    raise
 
             # if the version table exists, then we can version_control things
             # at that version, drop the version table, and let migrate take

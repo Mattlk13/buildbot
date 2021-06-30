@@ -27,6 +27,7 @@ TEST_UUIDS = {
     'image': '28a65eb4-f354-4420-97dc-253b826547f7',
     'volume': '65fbb9f1-c4d5-40a8-a233-ad47c52bb837',
     'snapshot': 'ab89152d-3c26-4d30-9ae5-65b705f874b7',
+    'flavor': '853774a1-459f-4f1f-907e-c96f62472531',
 }
 
 
@@ -38,12 +39,14 @@ class FakeNovaClient():
 class Client():
 
     def __init__(self, version, session):
-        self.images = ItemManager()
-        self.images._add_items([Image(TEST_UUIDS['image'], 'CirrOS 0.3.4', 13287936)])
+        self.glance = ItemManager()
+        self.glance._add_items([Image(TEST_UUIDS['image'], 'CirrOS 0.3.4', 13287936)])
         self.volumes = ItemManager()
         self.volumes._add_items([Volume(TEST_UUIDS['volume'], 'CirrOS 0.3.4', 4)])
         self.volume_snapshots = ItemManager()
         self.volume_snapshots._add_items([Snapshot(TEST_UUIDS['snapshot'], 'CirrOS 0.3.4', 2)])
+        self.flavors = ItemManager()
+        self.flavors._add_items([Flavor(TEST_UUIDS['flavor'], 'm1.small', 0)])
         self.servers = Servers()
         self.session = session
         self.client = FakeNovaClient()
@@ -84,6 +87,10 @@ class Image(Item):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         setattr(self, 'OS-EXT-IMG-SIZE:size', self.size)
+
+
+class Flavor(Item):
+    pass
 
 
 class Volume(Item):
@@ -128,6 +135,20 @@ class Servers():
         if instance_id in self.instances:
             del self.instances[instance_id]
 
+    def findall(self, **kwargs):
+        name = kwargs.get('name', None)
+        if name:
+            return list(filter(lambda item: item.name == name, self.instances.values()))
+        return []
+
+    def find(self, **kwargs):
+        result = self.findall(**kwargs)
+        if len(result) > 0:
+            raise NoUniqueMatch
+        if len(result) == 0:
+            raise NotFound
+        return result[0]
+
 
 # This is returned by Servers.create().
 class Instance():
@@ -139,7 +160,11 @@ class Instance():
         self.boot_kwargs = boot_kwargs
         self.gets = 0
         self.status = 'BUILD(networking)'
-        self.name = 'name'
+        self.metadata = boot_kwargs.get('meta', {})
+        try:
+            self.name = boot_args[0]
+        except IndexError:
+            self.name = 'name'
 
     def delete(self):
         self.servers.delete(self.id)
@@ -151,11 +176,18 @@ class NotFound(Exception):
     pass
 
 
+class NoUniqueMatch(Exception):
+    pass
+
 # Parts used from keystoneauth1.
 
 
 def get_plugin_loader(plugin_type):
-    return PasswordLoader()
+    if plugin_type == 'password':
+        return PasswordLoader()
+    if plugin_type == 'token':
+        return TokenLoader()
+    raise ValueError("plugin_type '{}' is not supported".format(plugin_type))
 
 
 class PasswordLoader():
@@ -164,15 +196,31 @@ class PasswordLoader():
         return PasswordAuth(**kwargs)
 
 
+class TokenLoader():
+    def load_from_options(self, **kwargs):
+        return TokenAuth(**kwargs)
+
+
 class PasswordAuth():
 
-    def __init__(self, auth_url, password, project_name, username, user_domain_name=None, project_domain_name=None):
+    def __init__(self, auth_url, password, project_name, username, user_domain_name=None,
+                 project_domain_name=None):
         self.auth_url = auth_url
         self.password = password
         self.project_name = project_name
         self.username = username
         self.user_domain_name = user_domain_name
         self.project_domain_name = project_domain_name
+
+
+class TokenAuth():
+    def __init__(self, auth_url, token):
+        self.auth_url = auth_url
+        self.token = token
+        self.project_name = 'tenant'
+        self.username = 'testuser'
+        self.user_domain_name = 'token'
+        self.project_domain_name = 'token'
 
 
 class Session():

@@ -77,6 +77,8 @@ def getMaster(case, reactor, config_dict):
     master.db.setup = lambda: None
 
     yield master.startService()
+
+    case.addCleanup(master.db.pool.shutdown)
     case.addCleanup(master.stopService)
 
     return master
@@ -93,14 +95,18 @@ class RunFakeMasterTestCase(unittest.TestCase, TestReactorMixin,
         self.assertFalse(self.master.running, "master is still running!")
 
     @defer.inlineCallbacks
-    def getMaster(self, config_dict):
+    def setup_master(self, config_dict):
         self.master = yield getMaster(self, self.reactor, config_dict)
-        return self.master
 
     @defer.inlineCallbacks
-    def reconfigMaster(self, config_dict):
-        self.master.config_loader.config_dict = config_dict
+    def reconfig_master(self, config_dict=None):
+        if config_dict is not None:
+            self.master.config_loader.config_dict = config_dict
         yield self.master.doReconfig()
+
+    @defer.inlineCallbacks
+    def clean_master_shutdown(self, quick=False):
+        yield self.master.botmaster.cleanShutdown(quickMode=quick, stopReactor=False)
 
     def createLocalWorker(self, name, **kwargs):
         workdir = FilePath(self.mktemp())
@@ -113,9 +119,27 @@ class RunFakeMasterTestCase(unittest.TestCase, TestReactorMixin,
         self.assertEqual(result, dbdict['results'])
 
     @defer.inlineCallbacks
-    def createBuildrequest(self, master, builder_ids, properties=None):
+    def assertStepStateString(self, step_id, state_string):
+        datadict = yield self.master.data.get(('steps', step_id))
+        self.assertEqual(datadict['state_string'], state_string)
+
+    @defer.inlineCallbacks
+    def assertLogs(self, build_id, exp_logs):
+        got_logs = {}
+        data_logs = yield self.master.data.get(('builds', build_id, 'steps', 1, 'logs'))
+        for log in data_logs:
+            self.assertTrue(log['complete'])
+            log_contents = yield self.master.data.get(('builds', build_id, 'steps', 1, 'logs',
+                                                       log['slug'], 'contents'))
+
+            got_logs[log['name']] = log_contents['content']
+
+        self.assertEqual(got_logs, exp_logs)
+
+    @defer.inlineCallbacks
+    def create_build_request(self, builder_ids, properties=None):
         properties = properties.asDict() if properties is not None else None
-        ret = yield master.data.updates.addBuildset(
+        ret = yield self.master.data.updates.addBuildset(
             waited_for=False,
             builderids=builder_ids,
             sourcestamps=[
@@ -128,6 +152,29 @@ class RunFakeMasterTestCase(unittest.TestCase, TestReactorMixin,
             properties=properties,
         )
         return ret
+
+    @defer.inlineCallbacks
+    def do_test_build_by_name(self, builder_name):
+        builder_id = yield self.master.data.updates.findBuilderId(builder_name)
+        yield self.do_test_build(builder_id)
+
+    @defer.inlineCallbacks
+    def do_test_build(self, builder_id):
+
+        # setup waiting for build to finish
+        d_finished = defer.Deferred()
+
+        def on_finished(_, __):
+            if not d_finished.called:
+                d_finished.callback(None)
+        consumer = yield self.master.mq.startConsuming(on_finished, ('builds', None, 'finished'))
+
+        # start the builder
+        yield self.create_build_request([builder_id])
+
+        # and wait for build completion
+        yield d_finished
+        yield consumer.stopConsuming()
 
 
 class RunMasterBase(unittest.TestCase):
@@ -156,7 +203,8 @@ class RunMasterBase(unittest.TestCase):
             elif self.proto == 'null':
                 proto = {"null": {}}
                 workerclass = worker.LocalWorker
-            config_dict['workers'] = [workerclass("local1", password=Interpolate("localpw"), missing_timeout=0)]
+            config_dict['workers'] = [workerclass("local1", password=Interpolate("localpw"),
+                                                  missing_timeout=0)]
             config_dict['protocols'] = proto
 
         m = yield getMaster(self, reactor, config_dict)
@@ -192,7 +240,7 @@ class RunMasterBase(unittest.TestCase):
             self.w = None
 
         if self.w is not None:
-            self.w.setServiceParent(m)
+            yield self.w.setServiceParent(m)
 
         @defer.inlineCallbacks
         def dump():
@@ -273,48 +321,58 @@ class RunMasterBase(unittest.TestCase):
                     step['logs'] = yield self.master.data.get(("steps", step['stepid'], "logs"))
                     step["logs"] = list(step['logs'])
                     for log in step["logs"]:
-                        log['contents'] = yield self.master.data.get(("logs", log['logid'], "contents"))
+                        log['contents'] = yield self.master.data.get(("logs", log['logid'],
+                                                                      "contents"))
 
         if wantProperties:
-            build["properties"] = yield self.master.data.get(("builds", build['buildid'], "properties"))
+            build["properties"] = yield self.master.data.get(("builds", build['buildid'],
+                                                              "properties"))
 
     @defer.inlineCallbacks
     def printBuild(self, build, out=sys.stdout, withLogs=False):
         # helper for debugging: print a build
         yield self.enrichBuild(build, wantSteps=True, wantProperties=True, wantLogs=True)
-        print(u"*** BUILD %d *** ==> %s (%s)" % (build['buildid'], build['state_string'],
-                                                 statusToString(build['results'])), file=out)
+        print(u"*** BUILD {} *** ==> {} ({})".format(build['buildid'], build['state_string'],
+                statusToString(build['results'])), file=out)
         for step in build['steps']:
-            print(u"    *** STEP %s *** ==> %s (%s)" % (step['name'], step['state_string'],
-                                                        statusToString(step['results'])), file=out)
+            print(u"    *** STEP {} *** ==> {} ({})".format(step['name'], step['state_string'],
+                    statusToString(step['results'])), file=out)
             for url in step['urls']:
-                print(u"       url:%s (%s)" %
-                      (url['name'], url['url']), file=out)
+                print(u"       url:{} ({})".format(url['name'], url['url']), file=out)
             for log in step['logs']:
-                print(u"        log:%s (%d)" %
-                      (log['name'], log['num_lines']), file=out)
+                print(u"        log:{} ({})".format(log['name'], log['num_lines']), file=out)
                 if step['results'] != SUCCESS or withLogs:
                     self.printLog(log, out)
 
+    def _match_patterns_consume(self, text, patterns, is_regex):
+        for pattern in patterns[:]:
+            if is_regex:
+                if re.search(pattern, text):
+                    patterns.remove(pattern)
+            else:
+                if pattern in text:
+                    patterns.remove(pattern)
+        return patterns
+
     @defer.inlineCallbacks
     def checkBuildStepLogExist(self, build, expectedLog, onlyStdout=False, regex=False):
+        if isinstance(expectedLog, str):
+            expectedLog = [expectedLog]
+        if not isinstance(expectedLog, list):
+            raise Exception('The expectedLog argument must be either string or a list of strings')
+
         yield self.enrichBuild(build, wantSteps=True, wantProperties=True, wantLogs=True)
         for step in build['steps']:
             for log in step['logs']:
                 for line in log['contents']['content'].splitlines():
                     if onlyStdout and line[0] != 'o':
                         continue
-                    if regex:
-                        if re.search(expectedLog, line):
-                            return True
-                    else:
-                        if expectedLog in line:
-                            return True
-        return False
+                    expectedLog = self._match_patterns_consume(line, expectedLog, is_regex=regex)
+
+        return len(expectedLog) == 0
 
     def printLog(self, log, out):
-        print(u" " * 8 + "*********** LOG: %s *********" %
-              (log['name'],), file=out)
+        print(u" " * 8 + "*********** LOG: {} *********".format(log['name']), file=out)
         if log['type'] == 's':
             for line in log['contents']['content'].splitlines():
                 linetype = line[0]
