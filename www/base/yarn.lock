@@ -1582,12 +1582,47 @@ buffer@^4.3.0:
     isarray "^1.0.0"
 
 "buildbot-build-common@link:../build_common":
-  version "0.0.0"
-  uid ""
+  version "1.0.0"
+  dependencies:
+    "@babel/core" "^7.4.3"
+    "@babel/plugin-syntax-dynamic-import" "^7.2.0"
+    "@babel/plugin-transform-runtime" "^7.4.3"
+    "@babel/preset-env" "^7.4.3"
+    "@babel/runtime" "^7.4.3"
+    autoprefixer "^9.5.1"
+    babel-loader "^8.0.5"
+    css-loader "^2.1.1"
+    file-loader "^3.0.1"
+    html-webpack-plugin "^3.2.0"
+    import-glob-loader "^1.1.0"
+    istanbul-instrumenter-loader "^3.0.1"
+    jasmine-core "^3.4.0"
+    karma "^4.1.0"
+    karma-chrome-launcher "^2.2.0"
+    karma-coverage "^1.1.2"
+    karma-jasmine "^2.0.1"
+    karma-sourcemap-loader "^0.3.7"
+    karma-spec-reporter "^0.0.32"
+    karma-webpack "^3.0.5"
+    less "^3.9.0"
+    less-loader "^5.0.0"
+    mini-css-extract-plugin "^0.6.0"
+    node-libs-browser "^2.2.0"
+    null-loader "^1.0.0"
+    postcss-loader "^3.0.0"
+    pug "^2.0.3"
+    raw-loader "^2.0.0"
+    style-loader "^0.23.1"
+    webpack "^4.30.0"
+    webpack-cli "^3.3.1"
+    webpack-dev-server "^3.3.1"
+    webpack-fix-style-only-entries "^0.2.1"
+    webpack-shell-plugin "^0.5.0"
 
 "buildbot-data-js@link:../data_module":
-  version "0.0.0"
-  uid ""
+  version "3.0.1"
+  dependencies:
+    angular "^1.7.9"
 
 builtin-status-codes@^3.0.0:
   version "3.0.0"
@@ -3322,8 +3357,14 @@ graceful-fs@^4.1.11, graceful-fs@^4.1.15, graceful-fs@^4.1.2, graceful-fs@^4.1.6
   integrity sha512-a30VEBm4PEdx1dRB7MFK7BejejvCvBronbLjht+sHuGYj8PHs7M/5Z+rt5lw551vZ7yfTCj4Vuyy3mSJytDWRQ==
 
 "guanlecoja-ui@link:../guanlecoja-ui":
-  version "0.0.0"
-  uid ""
+  version "2.0.0"
+  dependencies:
+    "@uirouter/angularjs" "^1.0.15"
+    angular "^1.7.9"
+    angular-animate "^1.7.9"
+    angular-ui-bootstrap "^2.5.6"
+    jquery "^3.4.0"
+    lodash "^4.17.11"
 
 handle-thing@^2.0.0:
   version "2.0.0"
@@ -6972,9 +7013,9 @@ typedarray@^0.0.6:
   integrity sha1-hnrHTjhkGHsdPUfZlqeOxciDB3c=
 
 ua-parser-js@^0.7.18:
-  version "0.7.20"
-  resolved "https://registry.yarnpkg.com/ua-parser-js/-/ua-parser-js-0.7.20.tgz#7527178b82f6a62a0f243d1f94fd30e3e3c21098"
-  integrity sha512-8OaIKfzL5cpx8eCMAhhvTlft8GYF8b2eQr6JkCyVdrgjcytyOmPCXrqXFcUnhonRpLlh5yxEZVohm6mzaowUOw==
+  version "0.7.33"
+  resolved "https://registry.yarnpkg.com/ua-parser-js/-/ua-parser-js-0.7.33.tgz#1d04acb4ccef9293df6f70f2c3d22f3030d8b532"
+  integrity sha512-s8ax/CeZdK9R/56Sui0WM6y9OFREJarMRHqLB2EwkovemBxNQ+Bqu8GAsUnVcXKgphb++ghr/B2BZx4mahujPw==
 
 uglify-js@3.4.x:
   version "3.4.10"
